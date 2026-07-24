@@ -1,5 +1,9 @@
 # JpgLossless · 图片压缩工作台（Web 版）
 
+<p align="center">
+  <img src="preview.png" alt="JpgLossless 界面预览" width="860">
+</p>
+
 纯本地运行的图片压缩工具。界面用系统 Edge **WebView2** 内核渲染（「工程蓝图」风格），
 压缩逻辑全部在本机完成，图片**不会上传**任何服务器。
 
