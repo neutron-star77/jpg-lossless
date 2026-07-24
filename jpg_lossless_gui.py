@@ -6,6 +6,7 @@
 输出选项：
   · 保存位置：原文件夹(覆盖) / 自定义文件夹
   · 目标格式：原格式(无损) / WebP(无损) / PNG(无损) / JPG(有损, 质量可调)
+  · 说明：JPEG/PNG 走 ect 原地无损最优；BMP/TIFF 在「原格式」下无损转 PNG
   · 文件名后缀：自定义输出文件名附加词（留空=覆盖或原名）
   · 保持原目录结构：自定义文件夹输出时保留子目录层级
   · JPG 质量滑块：转 JPG 时生效（1-100，默认 95）
@@ -14,7 +15,7 @@
   · 处理完成后自动打开输出文件夹
   · 记住上次设置（config.json 持久化）
   · 支持把文件/文件夹直接拖入窗口
-引擎：ect（自动下载，JPEG/PNG 原地无损最优）；转格式用 Pillow(libwebp)
+引擎：ect（自动下载，JPEG/PNG 原地无损最优）；BMP/TIFF 经 Pillow 转 PNG/WebP 无损；转格式用 Pillow(libwebp)
 
 运行：  python jpg_lossless_gui.py
 打包：  pyinstaller --onefile --noconsole --name JpgLossless --distpath . ^
@@ -38,7 +39,9 @@ BIN_DIR = os.path.join(APP_DIR, "bin")
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 
 ENGINE_ORDER = {"ect": 0, "jpegtran": 1, "jpegoptim": 2}
-IMG_EXTS = (".jpg", ".jpeg", ".png", ".jpe", ".jfif")
+IMG_EXTS = (".jpg", ".jpeg", ".png", ".jpe", ".jfif", ".bmp", ".tif", ".tiff")
+# 这些格式 ect 不支持原地无损，只能经 Pillow 转 PNG/WebP（像素无损）
+NO_INPLACE_EXTS = (".bmp", ".tif", ".tiff")
 FMT_EXT = {"WebP": ".webp", "PNG": ".png", "JPG": ".jpg"}
 
 # 视觉主题：克制的深石板头 + 蓝绿强调，刻意避开“奶油色+衬线”等 AI 模板套路
@@ -159,19 +162,28 @@ def to_webp_lossless(src, dst):
         im.save(dst, "WEBP", lossless=True, method=6)
 
 
+def to_png_lossless(src, dst):
+    from PIL import Image, ImageOps
+    with Image.open(src) as im:
+        im = ImageOps.exif_transpose(im)
+        im.save(dst, "PNG")
+
+
 def compress_one(src, dst, fmt, eng, quality):
     """按当前设置把 src 压缩到 dst，返回新文件大小（字节）。"""
     ext = os.path.splitext(src)[1].lower() if fmt == "原格式" else FMT_EXT[fmt]
     if fmt == "原格式":
+        if ext in NO_INPLACE_EXTS:
+            # BMP/TIFF 无法原地无损，转 PNG（像素无损）
+            to_png_lossless(src, dst)
+            return os.path.getsize(dst)
         if "ect" not in os.path.basename(eng).lower() and ext == ".png":
             raise RuntimeError("该引擎不支持 PNG，需 ect 引擎")
         run_engine(eng, src, dst)
     elif fmt == "WebP":
         to_webp_lossless(src, dst)
     elif fmt == "PNG":
-        from PIL import Image, ImageOps
-        with Image.open(src) as im:
-            ImageOps.exif_transpose(im).save(dst, "PNG")
+        to_png_lossless(src, dst)
     elif fmt == "JPG":
         from PIL import Image, ImageOps
         with Image.open(src) as im:
@@ -260,7 +272,7 @@ class App:
         header.pack_propagate(False)
         tk.Label(header, text="JpgLossless", bg=C_HEADER, fg="white",
                  font=(FONT_UI, 16, "bold")).pack(side="left", padx=16)
-        tk.Label(header, text="图片无损压缩 · WebP / PNG / JPG 转码",
+        tk.Label(header, text="图片无损压缩 · JPG/PNG/BMP/TIFF · WebP/PNG 转码",
                  bg=C_HEADER, fg=C_SUBTLE, font=(FONT_UI, 10)).pack(side="left")
         tk.Frame(self.root, bg=C_ACCENT, height=3).pack(fill="x")
 
@@ -513,7 +525,7 @@ class App:
     # ---------------- 选择 / 添加 ----------------
     def pick_files(self):
         paths = filedialog.askopenfilenames(
-            filetypes=[("图片", "*.jpg *.jpeg *.png"), ("All", "*.*")])
+            filetypes=[("图片", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff"), ("All", "*.*")])
         self.add_files(list(paths))
 
     def pick_dir(self):
@@ -634,7 +646,10 @@ class App:
     def _out_ext(self, src):
         fmt_mode = self.target_fmt_var.get()
         if fmt_mode == "原格式":
-            return os.path.splitext(src)[1].lower()
+            ext = os.path.splitext(src)[1].lower()
+            if ext in NO_INPLACE_EXTS:
+                return ".png"  # BMP/TIFF 原格式模式 → 无损转 PNG
+            return ext
         return FMT_EXT[fmt_mode]
 
     def preview_selected(self):
@@ -646,7 +661,9 @@ class App:
         src = self.tree.item(sel[0], "values")[0]
         self.show_orig(src)
         fmt_mode = self.target_fmt_var.get()
-        if fmt_mode == "原格式" and not self.engine:
+        src_ext = os.path.splitext(src)[1].lower()
+        # 原格式 + 非 BMP/TIFF 才需要 ect 引擎；BMP/TIFF 用 Pillow 转 PNG
+        if fmt_mode == "原格式" and src_ext not in NO_INPLACE_EXTS and not self.engine:
             messagebox.showerror("提示", "原格式无损需要引擎，请先点“开始压缩”以自动下载，或选择转格式模式")
             return
         fd, tmp = tempfile.mkstemp(suffix=self._out_ext(src))
@@ -677,18 +694,25 @@ class App:
             messagebox.showerror("提示", "请先选择自定义输出文件夹")
             return
         self.save_config()
-        if fmt_mode == "原格式":
+        # BMP/TIFF 经 Pillow 转码需 Pillow；其余转格式模式(WebP/PNG/JPG)也需 Pillow
+        needs_pil = (fmt_mode != "原格式") or any(
+            os.path.splitext(s)[1].lower() in NO_INPLACE_EXTS for s, _ in self.files)
+        if needs_pil:
+            try:
+                import PIL  # noqa
+            except ImportError:
+                messagebox.showerror("缺少依赖", "处理这些图片需要 Pillow：\npip install pillow")
+                return
+        # 仅当存在需要 ect 引擎的格式(JPEG/PNG)且引擎缺失时才下载
+        needs_engine = any(
+            os.path.splitext(s)[1].lower() not in NO_INPLACE_EXTS for s, _ in self.files)
+        if fmt_mode == "原格式" and needs_engine:
             if not self.engine:
                 self.log_msg("未检测到引擎，尝试自动下载 ect…")
                 threading.Thread(target=self.install_and_run, daemon=True).start()
             else:
                 threading.Thread(target=self.process, daemon=True).start()
         else:
-            try:
-                import PIL  # noqa
-            except ImportError:
-                messagebox.showerror("缺少依赖", "转格式模式需要 Pillow：\npip install pillow")
-                return
             threading.Thread(target=self.process, daemon=True).start()
 
     def install_and_run(self):
@@ -718,6 +742,9 @@ class App:
 
         if fmt_mode == "JPG":
             self.queue.put(("log", f"注意：转 JPG 为有损压缩（quality={quality}）", ""))
+        if fmt_mode == "原格式" and any(
+                os.path.splitext(s)[1].lower() in NO_INPLACE_EXTS for s, _ in self.files):
+            self.queue.put(("log", "BMP/TIFF 在「原格式」下将无损转为 PNG（ect 不支持其原地压缩）", ""))
 
         total = len(self.files)
         self.queue.put(("progress_max", total, ""))
