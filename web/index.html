@@ -583,13 +583,15 @@ function addFiles(arr){
   renderList(); renderThumbs();
 }
 
-async function chooseFiles(){
-  const r=await api.choose_files();
-  if(r&&r.length)addFiles(r);
+// 选择文件/文件夹：用原生 <input> 元素，绕过 pywebview 在后台线程弹原生对话框会
+// 跨线程失败的问题（表现为点了没反应）。文件/文件夹内容经 base64 走 api.add_drop。
+function chooseFiles(){
+  const inp=document.getElementById('fileInput');
+  inp.value=''; inp.click();
 }
-async function chooseDirs(){
-  const r=await api.choose_dirs();
-  if(r&&r.length)addFiles(r);
+function chooseDirs(){
+  const inp=document.getElementById('dirInput');
+  inp.value=''; inp.click();
 }
 async function start(){
   if(!files.length){ toast('请先选择/拖入文件'); return; }
@@ -655,20 +657,62 @@ async function poll(){
 }
 
 // 拖放：整个窗口都可作为放置区，避免“先添加一批后再拖入失败”的问题
-// （WebView2 有时只在 dataTransfer.items 暴露文件，故优先用 items.getAsFile 回退 files）
 const dz=document.getElementById('dropzone');
 function _hasFiles(e){
   if(!e.dataTransfer||!e.dataTransfer.types) return false;
   return Array.from(e.dataTransfer.types).indexOf('Files')>=0;
 }
-// 拖放：document 层只负责“允许放置 + 高亮”。真正的文件/文件夹由 pywebview 的
-// DOM drop（window.pywebview.dom.body.on('drop')）捕获【真实路径】后交给后端处理。
-// 关键点：在 pywebview/WebView2 里，document 层的 drop 事件拿不到系统拖入的文件
-// （dataTransfer.files 为空），必须经由 pywebview 的 DOM 事件才能获取真实路径（含文件夹）。
+function _readAsB64(file){
+  return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result.split(',')[1]); r.onerror=rej; r.readAsDataURL(file); });
+}
+// 递归读取目录项（webkitGetAsEntry 支持目录，可拿到其中所有文件的 blob）
+function _entryFile(entry){ return new Promise((res,rej)=>entry.file(f=>res(f), rej)); }
+function _readEntries(reader){ return new Promise((res,rej)=>reader.readEntries(es=>res(es), rej)); }
+async function _walkEntry(entry, out){
+  if(entry.isFile){ const f=await _entryFile(entry); if(f) out.push(f); }
+  else if(entry.isDirectory){
+    const reader=entry.createReader(); let batch;
+    // readEntries 每次只返回部分条目，需循环直到为空
+    do{ batch=await _readEntries(reader); for(const e of batch) await _walkEntry(e, out); }while(batch.length>0);
+  }
+}
+async function _collectFiles(dt){
+  const out=[];
+  // 优先用 webkitGetAsEntry：能识别目录并递归读取其内文件（含拖入的文件夹）
+  if(dt.items && dt.items.length && typeof dt.items[0].webkitGetAsEntry==='function'){
+    for(const it of dt.items){
+      if(it.kind!=='file') continue;
+      let entry=null; try{ entry=it.webkitGetAsEntry(); }catch(_){}
+      if(entry) await _walkEntry(entry, out);
+    }
+  }
+  // 回退：仅文件（不含目录）
+  if(!out.length && dt.files && dt.files.length){ for(const f of dt.files) out.push(f); }
+  return out;
+}
+// 把一批图片 blob 转 base64 后交给后端 add_drop（写入临时目录并生成缩略图）
+async function _addBlobs(blobs){
+  const imgs=blobs.filter(f=>/\.(jpe?g|png|jfif)$/i.test(f.name));
+  if(!imgs.length){ toast('没有可添加的图片'); return; }
+  const payload=[];
+  for(const f of imgs){ const d=await _readAsB64(f); if(d) payload.push({name:f.name, data:d}); }
+  if(!payload.length) return;
+  const r=await api.add_drop(payload);
+  if(r&&r.length) addFiles(r);
+  else toast('没有可添加的图片');
+}
+// 隐藏的 <input> 选择文件/文件夹后，同样走 add_drop
+document.getElementById('fileInput').addEventListener('change', e=>_addBlobs(Array.from(e.target.files||[])));
+document.getElementById('dirInput').addEventListener('change', e=>_addBlobs(Array.from(e.target.files||[])));
 document.addEventListener('dragenter',e=>{ if(!_hasFiles(e))return; e.preventDefault(); dz.classList.add('drag'); });
 document.addEventListener('dragover',e=>{ if(!_hasFiles(e))return; e.preventDefault(); e.dataTransfer.dropEffect='copy'; dz.classList.add('drag'); });
 document.addEventListener('dragleave',e=>{ if(!_hasFiles(e))return; e.preventDefault(); if(e.clientX<=0||e.clientY<=0) dz.classList.remove('drag'); });
-document.addEventListener('drop',e=>{ if(_hasFiles(e)){ e.preventDefault(); dz.classList.remove('drag'); } });
+document.addEventListener('drop',async e=>{
+  if(!_hasFiles(e)) return;
+  e.preventDefault(); dz.classList.remove('drag');
+  const blobs=await _collectFiles(e.dataTransfer);
+  await _addBlobs(blobs);
+});
 
 // 初始化
 async function init(){
@@ -691,9 +735,6 @@ async function init(){
   document.getElementById('delOkBtn').onclick=()=>removeByFilter(
     f=>/已压缩|已生成|无损/.test(f.status||''), '已删除 {n} 张“成功压缩”的图片（保留未成功的）');
   document.getElementById('clearBtn').onclick=()=>removeByFilter(()=>true, '已清空 {n} 张图片');
-
-  // 注册拖放监听（在 pywebviewready 之后，安全时序）。失败也不影响其它功能。
-  if(api && api.enable_drop){ try{ api.enable_drop(); }catch(_){} }
 
   // 还原已保存的设置到界面
   document.getElementById('suffix').value=settings.suffix||'';
@@ -831,5 +872,8 @@ async function boot(){
 }
 window.addEventListener('DOMContentLoaded', boot);
 </script>
+  <!-- 隐藏的文件/文件夹选择器：用原生 <input> 绕过 pywebview 后台线程弹原生对话框跨线程失败的问题 -->
+  <input id="fileInput" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png,.jfif" multiple style="display:none">
+  <input id="dirInput" type="file" webkitdirectory mozdirectory multiple style="display:none">
 </body>
 </html>

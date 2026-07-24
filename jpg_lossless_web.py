@@ -283,21 +283,42 @@ class Api:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    def _run_on_ui(self, func):
+        # 把调用派发到 UI 线程执行（create_file_dialog 等 WinForms 调用必须如此，
+        # 否则在 JS 桥接的后台线程里跨线程弹窗会被吞成 None）。
+        try:
+            import clr
+            from System import Action
+            bv = webview.windows[0].gui.BrowserView.instances[webview.windows[0].uid]
+            ctrl = bv.webview
+            box = {}
+            def _work():
+                try:
+                    box["r"] = func()
+                except Exception as e:
+                    box["e"] = e
+            ctrl.Invoke(Action(_work))
+            if "e" in box:
+                raise box["e"]
+            return box.get("r")
+        except Exception as e:
+            self._emit({"t": "log", "m": "对话框调用失败：%s" % e})
+            return None
+
     def choose_files(self):
-        # 注意：新版本 pywebview 的 file_types 必须是字符串格式 "描述(*.ext)"，
-        # 旧版的 ("描述", "*.ext") 元组格式会让 parse_file_type 抛 TypeError，
-        # 导致对话框打不开（表现为“点击选择文件没反应”）。
-        r = webview.windows[0].create_file_dialog(
+        # 注意：新版本 pywebview 的 file_types 必须是字符串格式 "描述(*.ext)"。
+        r = self._run_on_ui(lambda: webview.windows[0].create_file_dialog(
             webview.OPEN_DIALOG, allow_multiple=True,
-            file_types=("图片(*.jpg;*.jpeg;*.png)",))
+            file_types=("图片(*.jpg;*.jpeg;*.png)",)))
         return self._ingest(r)
 
     def choose_dirs(self):
-        r = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG, allow_multiple=True)
+        r = self._run_on_ui(lambda: webview.windows[0].create_file_dialog(
+            webview.FOLDER_DIALOG, allow_multiple=True))
         return self._ingest(r, folders=True)
 
     def choose_outdir(self):
-        r = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
+        r = self._run_on_ui(lambda: webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG))
         # pywebview 不同版本对 FOLDER_DIALOG 的返回值可能是 字符串 / 单层列表 / 嵌套列表，
         # 这里统一规整成“单个字符串路径”，避免前端把 list 当 out_dir 传入后 .strip() 报错。
         if isinstance(r, list):
@@ -360,41 +381,6 @@ class Api:
             # 否则前端“开始压缩”按钮会永久卡在 disabled（表现为点不动）。
             self._busy = False
             self._emit({"t": "finish", "m": msg})
-
-    # ---------- 拖放（pywebview DOM drop，可拿到真实路径，含文件夹） ----------
-    def on_drag_drop(self, event):
-        # 由 window.pywebview.dom.body.on('drop') 触发：
-        # pywebview 会把每个 file 的真实路径放进 event.dataTransfer.files[i].pywebviewFullPath
-        # （文件夹也会作为一项出现，pywebviewFullPath 指向该文件夹）
-        try:
-            files = ((event or {}).get("dataTransfer", {}) or {}).get("files", []) or []
-        except Exception:
-            files = []
-        paths = []
-        for f in files:
-            p = (f.get("pywebviewFullPath") or f.get("path") or "").strip()
-            if not p:
-                continue
-            if os.path.isdir(p) or p.lower().endswith(IMG_EXTS):
-                paths.append(p)
-        if not paths:
-            self._emit({"t": "log", "m": "拖入的内容不是图片/文件夹，已忽略"})
-            return
-        added = self._ingest(paths)
-        if added:
-            self._emit({"t": "files", "rows": added})
-            self._emit({"t": "log", "m": "拖入已添加 %d 个文件" % len(added)})
-        else:
-            self._emit({"t": "log", "m": "拖入的内容里没有可添加的图片"})
-
-    def enable_drop(self):
-        # 通过 pywebview 的 DOM 事件注册 drop：只有这样才能拿到拖入项的真实路径（含文件夹）。
-        # 放在前端 pywebviewready 之后调用（见 index.html 的 init()），避免在页面加载早期
-        # evaluate_js 过早执行而抛异常、进而把整个窗口的 API 桥接弄坏（会导致所有按钮失灵）。
-        try:
-            webview.windows[0].dom.body.on("drop", self.on_drag_drop)
-        except Exception as e:
-            self._emit({"t": "log", "m": "拖放监听注册失败：%s" % e})
 
     def _run(self, settings):
         fmt_mode = _as_text(settings.get("target_fmt", "原格式"), "原格式")
