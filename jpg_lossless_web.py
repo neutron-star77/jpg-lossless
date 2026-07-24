@@ -138,12 +138,28 @@ def to_webp(src, dst, quality=95):
     q = int(quality)
     with Image.open(src) as im:
         im = ImageOps.exif_transpose(im).convert("RGB")
+        # method=0 编码最快；但大尺寸/高细节图会触发 libwebp 分区溢出
+        # (VP8_ENC_ERROR_PARTITION0_OVERFLOW, 即 ValueError: encoding error 6)，
+        # 此时回退到更稳妥的 method（4/6）即可正常编码。
         if q >= 100:
-            # 无损：libwebp 对照片既慢（数十秒）又会让文件变大，仅作可选
-            im.save(dst, "WEBP", lossless=True, method=0)
+            methods = (0, 6)
         else:
-            # 有损：method=0 最快编码，速度快、体积远小于原 JPEG，是照片转 WebP 的正确方式
-            im.save(dst, "WEBP", lossless=False, quality=q, method=0)
+            methods = (0, 4, 6)
+        last = None
+        for m in methods:
+            try:
+                if q >= 100:
+                    im.save(dst, "WEBP", lossless=True, method=m)
+                else:
+                    im.save(dst, "WEBP", lossless=False, quality=q, method=m)
+                return
+            except Exception as e:
+                last = e
+                # 仅当是 WebP 编码分区溢出等错误才回退；其它错误（如损坏文件）直接抛出
+                if "encoding error" in str(e).lower() or "encoder error" in str(e).lower():
+                    continue
+                raise
+        raise RuntimeError("WebP 编码失败（图片过大或细节过多）：%s" % last)
 
 
 def compress_one(src, dst, fmt, eng, quality, level=-5):
