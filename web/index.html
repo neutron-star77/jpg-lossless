@@ -465,6 +465,12 @@
     </div>
   </div>
 
+<!-- 隐藏的文件/文件夹选择器：必须放在 <script> 之前！
+     内联脚本同步执行时会 getElementById 注册 change 监听，若 input 在脚本之后，
+     取到 null 会抛错导致脚本从该行起整体中断（按钮/拖放/init 全部失效）。 -->
+<input id="fileInput" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png,.jfif" multiple style="display:none">
+<input id="dirInput" type="file" webkitdirectory mozdirectory multiple style="display:none">
+
 <script>
 let api = null;
 let files = [];          // {src,name,thumb,old,new,save,status}
@@ -872,8 +878,5 @@ async function boot(){
 }
 window.addEventListener('DOMContentLoaded', boot);
 </script>
-  <!-- 隐藏的文件/文件夹选择器：用原生 <input> 绕过 pywebview 后台线程弹原生对话框跨线程失败的问题 -->
-  <input id="fileInput" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png,.jfif" multiple style="display:none">
-  <input id="dirInput" type="file" webkitdirectory mozdirectory multiple style="display:none">
 </body>
 </html>
