@@ -1,0 +1,13 @@
+# 自动生成的用户配置（含上次设置，不入库）
+config.json
+
+# 构建产物与二进制
+*.exe
+*.pyc
+build/
+dist/
+bin/
+__pycache__/
+
+# 压缩引擎（首次运行会自动下载，或自行放入 bin/）
+bin/ect.exe
