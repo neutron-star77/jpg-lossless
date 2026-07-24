@@ -1,5 +1,6 @@
 # 自动生成的用户配置（含上次设置，不入库）
 config.json
+failed.json
 
 # 构建产物与二进制
 *.exe
