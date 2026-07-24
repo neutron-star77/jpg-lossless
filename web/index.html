@@ -686,26 +686,90 @@ async function _collectFiles(dt){
   const out=[];
   // 优先用 webkitGetAsEntry：能识别目录并递归读取其内文件（含拖入的文件夹）
   if(dt.items && dt.items.length && typeof dt.items[0].webkitGetAsEntry==='function'){
+    let dirs=0, files=0;
+    const entries=[];
     for(const it of dt.items){
       if(it.kind!=='file') continue;
       let entry=null; try{ entry=it.webkitGetAsEntry(); }catch(_){}
-      if(entry) await _walkEntry(entry, out);
+      if(!entry) continue;
+      entries.push(entry);
+      if(entry.isDirectory) dirs++; else files++;
     }
+    log(`拖入内容：${dirs} 个文件夹、${files} 个文件，正在遍历目录…`);
+    for(const entry of entries){
+      const before=out.length;
+      await _walkEntry(entry, out);
+      if(entry.isDirectory) log(`  · 文件夹「${entry.name}」枚举到 ${out.length-before} 个文件`);
+    }
+    log(`目录遍历完成，共发现 ${out.length} 个文件。`);
   }
   // 回退：仅文件（不含目录）
-  if(!out.length && dt.files && dt.files.length){ for(const f of dt.files) out.push(f); }
+  if(!out.length && dt.files && dt.files.length){
+    for(const f of dt.files) out.push(f);
+    log(`拖入 ${out.length} 个文件（回退模式，不含子目录）。`);
+  }
   return out;
 }
-// 把一批图片 blob 转 base64 后交给后端 add_drop（写入临时目录并生成缩略图）
+// 把一批图片 blob 交给后端 add_drop（写入临时目录并生成缩略图）
+// 关键设计（大批量/大文件不卡死）：
+//  - 分批传输：每批最多 BATCH_N 张或累计 BATCH_BYTES 字节就先发一批，
+//    避免把成百上千张图 base64 拼成一个巨大数组一次性 postMessage（会撑爆桥接/内存）。
+//  - 全链路日志：每一步（收集/读取/编码/发送/入库）都写进运行日志，卡在哪一目了然。
+//  - base64 会使体积膨胀约 33%，故按“原始字节”控批，单批默认约 24MB 原始数据。
+const BATCH_N = 40;                 // 每批最多张数
+const BATCH_BYTES = 24 * 1024 * 1024; // 每批最多原始字节（base64 后约 32MB）
 async function _addBlobs(blobs){
   const imgs=blobs.filter(f=>/\.(jpe?g|png|jfif)$/i.test(f.name));
   if(!imgs.length){ toast('没有可添加的图片'); return; }
-  const payload=[];
-  for(const f of imgs){ const d=await _readAsB64(f); if(d) payload.push({name:f.name, data:d}); }
-  if(!payload.length) return;
-  const r=await api.add_drop(payload);
-  if(r&&r.length) addFiles(r);
-  else toast('没有可添加的图片');
+
+  let total=0; for(const f of imgs) total+=(f.size||0);
+  log(`拖入/选择：共 ${imgs.length} 张图片，合计 ${fmt(total)}，开始读取…`);
+  if(total > 500*1048576){
+    log(`⚠ 本次总量较大（${fmt(total)}），将分批处理，请耐心等待；建议单次控制在 500MB 内更流畅。`);
+  }
+
+  const t0=Date.now();
+  let addedCount=0, batchNo=0, sentBytes=0;
+  let batch=[], batchBytes=0;
+
+  async function flush(){
+    if(!batch.length) return;
+    batchNo++;
+    const bn=batchNo, cnt=batch.length, bytes=batchBytes;
+    log(`  · 第 ${bn} 批：发送 ${cnt} 张（约 ${fmt(bytes)}）到后端…`);
+    let r=null;
+    try{
+      r=await api.add_drop(batch);
+    }catch(err){
+      log(`  ✗ 第 ${bn} 批发送失败：${err}（可能是单批过大，尝试调小批量）`);
+      batch=[]; batchBytes=0; return;
+    }
+    if(r&&r.length){ addFiles(r); addedCount+=r.length;
+      log(`  ✓ 第 ${bn} 批已入库 ${r.length} 张（累计 ${addedCount}）`); }
+    else { log(`  ! 第 ${bn} 批后端未返回可添加项`); }
+    sentBytes+=bytes; batch=[]; batchBytes=0;
+  }
+
+  for(let i=0;i<imgs.length;i++){
+    const f=imgs[i];
+    let d=null;
+    try{ d=await _readAsB64(f); }catch(err){ log(`  ✗ 读取失败：${f.name}（${err}）`); continue; }
+    if(!d){ log(`  ✗ 读取为空：${f.name}`); continue; }
+    batch.push({name:f.name, data:d});
+    batchBytes+=(f.size|| (d.length*0.75));
+    // 达到批量阈值就先发送，避免累积过大
+    if(batch.length>=BATCH_N || batchBytes>=BATCH_BYTES) await flush();
+  }
+  await flush();
+
+  const sec=((Date.now()-t0)/1000).toFixed(1);
+  if(addedCount>0){
+    log(`完成：共添加 ${addedCount} 张，耗时 ${sec}s。`);
+    toast(`已添加 ${addedCount} 张`);
+  }else{
+    log(`结束：没有可添加的图片（耗时 ${sec}s）。`);
+    toast('没有可添加的图片');
+  }
 }
 // 隐藏的 <input> 选择文件/文件夹后，同样走 add_drop
 document.getElementById('fileInput').addEventListener('change', e=>_addBlobs(Array.from(e.target.files||[])));
