@@ -245,6 +245,19 @@
   /* ---- 设置弹窗 ---- */
   .modal-mask{position:fixed; inset:0; background:rgba(15,23,33,.45); z-index:60;
     display:flex; align-items:center; justify-content:center;}
+  /* 启动载入失败图片的遮罩 + 取消按钮 */
+  .loadmask{position:fixed; inset:0; background:rgba(15,23,33,.45); z-index:80; display:none;
+    align-items:center; justify-content:center}
+  .loadbox{background:var(--surface); border-radius:18px; padding:26px 34px; display:flex;
+    flex-direction:column; align-items:center; gap:14px;
+    box-shadow:6px 6px 16px rgba(15,23,33,.18), -6px -6px 16px rgba(255,255,255,.5)}
+  .loadmask .spinner.big{width:42px; height:42px; border-width:5px}
+  .loadtxt{font-size:13.5px; color:var(--ink); text-align:center; max-width:320px; line-height:1.5}
+  .loadcancel{margin-top:2px; border:0; background:var(--bg); border-radius:9px; padding:7px 20px;
+    font-size:12.5px; cursor:pointer; color:var(--muted); font-family:var(--sans); letter-spacing:.5px;
+    box-shadow:3px 3px 6px var(--neu-dark), -3px -3px 6px var(--neu-light); transition:box-shadow .15s,color .15s}
+  .loadcancel:hover{color:var(--blue)}
+  .loadcancel:active{box-shadow:inset 3px 3px 6px var(--neu-dark), inset -3px -3px 6px var(--neu-light)}
   .modal{width:580px; max-width:92vw; max-height:86vh; background:var(--surface);
     border:0; border-radius:22px; display:flex; flex-direction:column;
     overflow:hidden; box-shadow:12px 12px 28px var(--neu-dark), -12px -12px 28px var(--neu-light)}
@@ -558,6 +571,7 @@ function renderList(){
     else if(/已最优|跳过|更大/.test(badge))bcls='muted';
     row.innerHTML=`<div class="file-top"><div class="fname">${f.name}</div>`+
       `<div class="badge ${bcls}">${badge}</div></div>${bars}${meta}`;
+    if(bcls==='fail'){ row.title = f.status; row.style.cursor='help'; }
     row.onclick=()=>select(f.src);
     row.oncontextmenu=(e)=>{ e.preventDefault(); removeFile(f.src); };
     list.appendChild(row);
@@ -1066,8 +1080,53 @@ async function boot(){
   }
   api = window.pywebview.api;
   await init();
+  loadInitialFiles();
 }
+// 启动后载入上一次压缩失败的图片；失败较多时弹遮罩（可取消），避免界面看似卡死
+async function loadInitialFiles(){
+  window._loadCancel = false;
+  const cancelBtn = document.getElementById('loadCancel');
+  if(cancelBtn) cancelBtn.onclick = () => {
+    window._loadCancel = true;
+    const m = document.getElementById('loadMask');
+    if(m) m.style.display = 'none';
+  };
+  try{
+    let cnt = 0;
+    try{ const c = await api.get_failed_count(); cnt = (c && c.count) || 0; }catch(_){}
+    const mask = document.getElementById('loadMask');
+    if(cnt >= 5 && mask){
+      document.getElementById('loadTxt').textContent =
+        '正在载入上一次压缩失败的图片（' + cnt + ' 张）…，可点「取消」放弃';
+      mask.style.display = 'flex';
+      await new Promise(r => setTimeout(r, 60));
+    }
+    const r = await api.get_all_files();
+    if(window._loadCancel){ if(mask) mask.style.display='none'; return; }
+    const arr = (r && r.files) || [];
+    if(!arr.length){ if(mask) mask.style.display='none'; return; }
+    for(const f of arr){
+      if(window._loadCancel) break;
+      if(files.some(x=>x.src===f.src)) continue;
+      files.push({src:f.src, name:f.name, thumb:f.thumb, status:f.status,
+                  old:f.old||0, new:f.new||0, out:f.out});
+    }
+    renderList(); renderThumbs();
+  }catch(_){}
+  finally{
+    const mask = document.getElementById('loadMask');
+    if(mask) mask.style.display = 'none';
+  }
+}
+
 window.addEventListener('DOMContentLoaded', boot);
 </script>
+  <div class="loadmask" id="loadMask" style="display:none">
+    <div class="loadbox">
+      <i class="spinner big"></i>
+      <div class="loadtxt" id="loadTxt">正在载入…</div>
+      <button class="loadcancel" id="loadCancel">取消</button>
+    </div>
+  </div>
 </body>
 </html>
