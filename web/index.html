@@ -563,15 +563,35 @@ function renderList(){
     list.appendChild(row);
   }
 }
+// 懒加载缩略图：进入视口才向后端 get_thumb 取，避免 2G/上千张时一次性全量解码卡死
+let _thumbObserver=null;
+function _thumbObserverInst(){
+  if(_thumbObserver) return _thumbObserver;
+  _thumbObserver=new IntersectionObserver((entries,obs)=>{
+    for(const e of entries){
+      if(!e.isIntersecting) continue;
+      const img=e.target; obs.unobserve(img);
+      const f=img._f; if(!f) continue;
+      // 异步取缩略图，取到后缓存到 f.thumb 并填充 <img>（失败则保持空占位）
+      api.get_thumb(f.src).then(t=>{ if(t){ f.thumb=t; img.src=t; } }).catch(()=>{});
+    }
+  }, {root:document.getElementById('thumbs'), rootMargin:'120px'});
+  return _thumbObserver;
+}
 function renderThumbs(){
   const box=document.getElementById('thumbs');
   const hint=document.getElementById('dropHint');
   if(!files.length){ box.style.display='none'; box.innerHTML=''; hint.style.display='block'; return; }
   hint.style.display='none'; box.style.display='grid';
   box.innerHTML='';
+  const obs=_thumbObserverInst();
   for(const f of files){
     const d=document.createElement('div'); d.className='thumb'+(f.src===selected?' sel':'');
-    d.innerHTML=`<img src="${f.thumb}" alt=""><span>${f.name}</span>`;
+    const img=document.createElement('img');
+    if(f.thumb){ img.src=f.thumb; }          // 已有缩略图直接显示
+    else { img._f=f; img.alt=''; obs.observe(img); }  // 否则进入视口再懒加载
+    const span=document.createElement('span'); span.textContent=f.name;
+    d.appendChild(img); d.appendChild(span);
     d.onclick=()=>select(f.src);
     d.oncontextmenu=(e)=>{ e.preventDefault(); removeFile(f.src); };
     box.appendChild(d);
@@ -618,8 +638,9 @@ function persist(){ api.set_config(settings); }
 
 function addFiles(arr){
   for(const it of arr){
+    if(it.ok===false) continue;            // 失败项已在 flush 中逐张报错，这里不再入库
     if(files.some(x=>x.src===it.src))continue;
-    files.push({src:it.src,name:it.name,thumb:it.thumb,old:0,new:0,save:'',status:'待处理'});
+    files.push({src:it.src,name:it.name,thumb:it.thumb||'',old:0,new:0,save:'',status:'待处理'});
   }
   renderList(); renderThumbs();
 }
@@ -753,8 +774,10 @@ async function _collectFiles(dt){
 //    避免把成百上千张图 base64 拼成一个巨大数组一次性 postMessage（会撑爆桥接/内存）。
 //  - 全链路日志：每一步（收集/读取/编码/发送/入库）都写进运行日志，卡在哪一目了然。
 //  - base64 会使体积膨胀约 33%，故按“原始字节”控批，单批默认约 24MB 原始数据。
-const BATCH_N = 40;                 // 每批最多张数
-const BATCH_BYTES = 24 * 1024 * 1024; // 每批最多原始字节（base64 后约 32MB）
+const BATCH_N = 40;                    // 每批最多张数
+const BATCH_BYTES = 12 * 1024 * 1024;  // 每批最多原始字节（base64 后约 16MB，稳在实测安全线内）
+const SINGLE_MAX = 30 * 1048576;       // 单张超过此值则单独成批（避免与别的图拼成大消息）
+const HARD_MAX   = 100 * 1048576;      // 单张超过此值直接跳过并报错（无法安全传输）
 async function _addBlobs(blobs){
   const imgs=blobs.filter(f=>/\.(jpe?g|png|jfif)$/i.test(f.name));
   if(!imgs.length){ toast('没有可添加的图片'); return; }
@@ -764,10 +787,13 @@ async function _addBlobs(blobs){
   if(total > 500*1048576){
     log(`⚠ 本次总量较大（${fmt(total)}），将分批处理，请耐心等待；建议单次控制在 500MB 内更流畅。`);
   }
+  if(total > 2*1024*1048576){
+    log(`⚠ 总量超过 2GB（${fmt(total)}），读取+上传+缩略图生成可能耗时数分钟，请耐心等待进度条。`);
+  }
   _setDropBusy(true, `读取中… 0 / ${imgs.length} 张`, 0);
 
   const t0=Date.now();
-  let addedCount=0, batchNo=0, sentBytes=0, readCnt=0;
+  let addedCount=0, batchNo=0, sentBytes=0, readCnt=0, skipCount=0, skipBytes=0;
   let batch=[], batchBytes=0;
 
   async function flush(){
@@ -775,41 +801,63 @@ async function _addBlobs(blobs){
     batchNo++;
     const bn=batchNo, cnt=batch.length, bytes=batchBytes;
     const pct = total>0 ? Math.round(sentBytes/total*100) : 0;
-    log(`  · 第 ${bn} 批：发送 ${cnt} 张（约 ${fmt(bytes)}）到后端…`);
+    const bigOnly = cnt===1 && batch[0].rawSize > SINGLE_MAX;
+    log(`  · 第 ${bn} 批：发送 ${cnt} 张（约 ${fmt(bytes)}）到后端…` + (bigOnly?`（含单张大文件 ${fmt(batch[0].rawSize)}）`:''));
     _setDropBusy(true, `上传第 ${bn} 批… 已发送 ${fmt(sentBytes)} / ${fmt(total)}`, pct);
     let r=null;
     try{
       r=await api.add_drop(batch);
     }catch(err){
-      log(`  ✗ 第 ${bn} 批发送失败：${err}（可能是单批过大，尝试调小批量）`);
-      _setDropBusy(true, `⚠ 第 ${bn} 批发送失败，重试前请见日志`, pct);
+      // 整批发送异常（多半是单批消息过大超出桥接上限）：逐张报错，不再静默丢失
+      log(`  ✗ 第 ${bn} 批发送失败：${err}（该批 ${cnt} 张未能传入，建议减小单张大小或分多次拖入）`);
+      toast(`⚠ 第 ${bn} 批发送失败，${cnt} 张未传入`);
+      _setDropBusy(true, `⚠ 第 ${bn} 批发送失败（${cnt} 张未传入）`, pct);
       batch=[]; batchBytes=0; return;
     }
-    if(r&&r.length){ addFiles(r); addedCount+=r.length;
-      log(`  ✓ 第 ${bn} 批已入库 ${r.length} 张（累计 ${addedCount}）`); }
-    else { log(`  ! 第 ${bn} 批后端未返回可添加项`); }
+    // 逐张核对后端返回：成功入库 vs 判定失败
+    let okRows=[], fails=[];
+    for(const it of (r||[])){ if(it.ok) okRows.push(it); else fails.push(it); }
+    if(okRows.length){ addFiles(okRows); addedCount+=okRows.length;
+      log(`  ✓ 第 ${bn} 批已入库 ${okRows.length} 张（累计 ${addedCount}）`); }
+    if(fails.length){
+      log(`  ✗ 第 ${bn} 批有 ${fails.length} 张未能传入：`);
+      for(const fl of fails) log(`     · ${fl.name||'?'}：${fl.err||'未知原因'}`);
+      toast(`⚠ 第 ${bn} 批 ${fails.length} 张传入失败`);
+    }
+    if(!okRows.length && !fails.length){ log(`  ! 第 ${bn} 批后端未返回任何结果`); }
     sentBytes+=bytes; batch=[]; batchBytes=0;
   }
 
   for(let i=0;i<imgs.length;i++){
     const f=imgs[i];
+    // 单张超过硬上限：无法安全传输，直接跳过并报错（不尝试发送以免拖垮整批）
+    if((f.size||0) > HARD_MAX){
+      skipCount++; skipBytes+=(f.size||0);
+      log(`  ✗ 跳过「${f.name}」：单张 ${fmt(f.size||0)} 超过上限 ${fmt(HARD_MAX)}，无法传输`);
+      continue;
+    }
     let d=null;
     try{ d=await _readAsB64(f); }catch(err){ log(`  ✗ 读取失败：${f.name}（${err}）`); continue; }
     if(!d){ log(`  ✗ 读取为空：${f.name}`); continue; }
-    batch.push({name:f.name, data:d});
+    batch.push({name:f.name, data:d, rawSize:f.size||0});
     batchBytes+=(f.size|| (d.length*0.75));
     readCnt++;
     _setDropBusy(true, `读取中… ${readCnt} / ${imgs.length} 张`, Math.round(readCnt/imgs.length*100));
-    // 达到批量阈值就先发送，避免累积过大
-    if(batch.length>=BATCH_N || batchBytes>=BATCH_BYTES) await flush();
+    // 单张超大：单独成批，避免和别的图拼成一个超大消息；否则达到批量阈值先发送
+    if(f.size > SINGLE_MAX){ await flush(); }
+    else if(batch.length>=BATCH_N || batchBytes>=BATCH_BYTES) await flush();
   }
   await flush();
 
   const sec=((Date.now()-t0)/1000).toFixed(1);
+  if(skipCount>0){
+    log(`⚠ 已跳过 ${skipCount} 张过大文件（合计 ${fmt(skipBytes)}），因其超过单张上限 ${fmt(HARD_MAX)}。`);
+  }
   if(addedCount>0){
-    log(`完成：共添加 ${addedCount} 张，耗时 ${sec}s。`);
-    toast(`已添加 ${addedCount} 张`);
-    _setDropBusy(true, `完成！已添加 ${addedCount} 张（${sec}s）`, 100);
+    const skipTip = skipCount? `，${skipCount} 张过大已跳过` : '';
+    log(`完成：共添加 ${addedCount} 张，耗时 ${sec}s。${skipCount?`${skipCount} 张过大已跳过。`:''}`);
+    toast(`已添加 ${addedCount} 张` + skipTip);
+    _setDropBusy(true, `完成！已添加 ${addedCount} 张（${sec}s）` + skipTip, 100);
   }else{
     log(`结束：没有可添加的图片（耗时 ${sec}s）。`);
     toast('没有可添加的图片');

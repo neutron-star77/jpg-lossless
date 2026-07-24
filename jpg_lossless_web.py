@@ -213,6 +213,7 @@ class Api:
             return ""
 
     def _ingest(self, paths, folders=False):
+        # 与 add_drop 保持一致：不在此同步生成缩略图，改由前端懒加载 get_thumb
         if not paths:
             return []
         if not isinstance(paths, list):
@@ -231,8 +232,7 @@ class Api:
                 if any(src == s for s, _ in self.files):
                     continue
                 self.files.append((src, base))
-                added.append({"src": src, "name": os.path.basename(src),
-                              "thumb": self._thumb_b64(src)})
+                added.append({"src": src, "name": os.path.basename(src), "ok": True})
         return added
 
     # ---------- 配置 ----------
@@ -328,11 +328,15 @@ class Api:
         return r
 
     def add_drop(self, items):
+        # 注意：缩略图不在本函数同步生成（大批量拖入时逐张全量解码极慢，
+        # 会把“入库”拖成分钟级），改由前端按需调用 get_thumb 懒加载。
+        # 每张都返回 ok/err 状态，便于前端对“无法传入”的图片明确报错，而非静默丢弃。
         out = []
         for it in (items or []):
             name = it.get("name", "image.dat")
             data = it.get("data", "")
             if not data:
+                out.append({"name": name, "ok": False, "err": "空数据，已跳过"})
                 continue
             dst = os.path.join(self.drop_dir, name)
             base, ext = os.path.splitext(name)
@@ -343,14 +347,22 @@ class Api:
             try:
                 with open(dst, "wb") as f:
                     f.write(base64.b64decode(data))
-            except Exception:
+            except Exception as e:
+                out.append({"name": name, "ok": False,
+                            "err": "解码/写入失败：%s" % str(e)})
                 continue
             if any(dst == s for s, _ in self.files):
+                out.append({"name": name, "ok": False, "err": "重复文件，已跳过"})
                 continue
             self.files.append((dst, self.drop_dir))
-            out.append({"src": dst, "name": os.path.basename(dst),
-                        "thumb": self._thumb_b64(dst)})
+            out.append({"src": dst, "name": os.path.basename(dst), "ok": True})
         return out
+
+    def get_thumb(self, src):
+        # 懒加载缩略图：仅对已进入 self.files 的图片生成，避免任意路径读取
+        if not any(src == s for s, _ in self.files):
+            return ""
+        return self._thumb_b64(src)
 
     def remove_file(self, src):
         self.files = [(s, b) for s, b in self.files if s != src]
