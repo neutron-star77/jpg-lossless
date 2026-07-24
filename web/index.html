@@ -720,9 +720,22 @@ async function poll(){
 
 // 拖放：整个窗口都可作为放置区，避免“先添加一批后再拖入失败”的问题
 const dz=document.getElementById('dropzone');
+// 判定拖放中是否含文件/文件夹。
+// 注意：从资源管理器拖【文件夹】时，dataTransfer.types 往往【不含 'Files'】（单文件才会含），
+// 若只认 'Files' 会在 drop 入口直接 return，表现为“拖文件夹没反应、无日志”。
+// 因此同时兼容 items 里 kind==='file' / 有 webkitGetAsEntry / Firefox 的 x-moz-file 等情形。
 function _hasFiles(e){
-  if(!e.dataTransfer||!e.dataTransfer.types) return false;
-  return Array.from(e.dataTransfer.types).indexOf('Files')>=0;
+  const dt=e.dataTransfer; if(!dt) return false;
+  const t=dt.types?Array.from(dt.types):[];
+  if(t.indexOf('Files')>=0) return true;
+  if(dt.items && dt.items.length){
+    for(const it of dt.items){
+      if(it.kind==='file') return true;
+      if(typeof it.webkitGetAsEntry==='function') return true;
+    }
+  }
+  if(t.some(x=>/moz-file/i.test(x))) return true;  // Firefox 拖文件/文件夹
+  return false;
 }
 function _readAsB64(file){
   return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result.split(',')[1]); r.onerror=rej; r.readAsDataURL(file); });
@@ -745,7 +758,7 @@ async function _collectFiles(dt){
     let dirs=0, files=0;
     const entries=[];
     for(const it of dt.items){
-      if(it.kind!=='file') continue;
+      if(it.kind && it.kind!=='file') continue;   // 仅跳过明确为字符串的项，文件夹项的 kind 也可能为 'file'
       let entry=null; try{ entry=it.webkitGetAsEntry(); }catch(_){}
       if(!entry) continue;
       entries.push(entry);
@@ -872,7 +885,14 @@ document.getElementById('fileInput').addEventListener('change', e=>{
   e.target.value=''; // 允许重复选择同一文件
 });
 document.getElementById('dirInput').addEventListener('change', e=>{
-  _addBlobs(Array.from(e.target.files||[])).catch(err=>{ log(`✗ 选择文件夹失败：${err}`); _setDropBusy(false); });
+  const files=Array.from(e.target.files||[]);
+  if(!files.length){
+    // webkitdirectory 选择文件夹后 files 可能为空的兜底提示（多见于部分 WebView/浏览器）
+    log('选择文件夹：未获取到任何文件（可能是该环境不支持文件夹选择，建议改用“拖入文件夹”）');
+    toast('未获取到文件，请尝试“拖入文件夹”');
+  }else{
+    _addBlobs(files).catch(err=>{ log(`✗ 选择文件夹失败：${err}`); _setDropBusy(false); });
+  }
   e.target.value='';
 });
 document.addEventListener('dragenter',e=>{ if(!_hasFiles(e))return; e.preventDefault(); dz.classList.add('drag'); });
