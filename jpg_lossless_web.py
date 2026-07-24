@@ -387,6 +387,15 @@ class Api:
         else:
             self._emit({"t": "log", "m": "拖入的内容里没有可添加的图片"})
 
+    def enable_drop(self):
+        # 通过 pywebview 的 DOM 事件注册 drop：只有这样才能拿到拖入项的真实路径（含文件夹）。
+        # 放在前端 pywebviewready 之后调用（见 index.html 的 init()），避免在页面加载早期
+        # evaluate_js 过早执行而抛异常、进而把整个窗口的 API 桥接弄坏（会导致所有按钮失灵）。
+        try:
+            webview.windows[0].dom.body.on("drop", self.on_drag_drop)
+        except Exception as e:
+            self._emit({"t": "log", "m": "拖放监听注册失败：%s" % e})
+
     def _run(self, settings):
         fmt_mode = _as_text(settings.get("target_fmt", "原格式"), "原格式")
         save_mode = _as_text(settings.get("save_mode", "原文件夹"), "原文件夹")
@@ -589,7 +598,7 @@ def main():
     # file:// 有正常 origin，api 方法注入可靠。前端再用轮询等待 api 就绪。
     html_path = resource_path(os.path.join("web", "index.html"))
     api = Api()
-    window = webview.create_window(
+    webview.create_window(
         "JpgLossless · 图片压缩工作台",
         url=html_path,
         js_api=api,
@@ -597,9 +606,6 @@ def main():
         height=760,
         min_size=(960, 640),
     )
-    # 通过 pywebview 的 DOM 事件注册 drop 监听：只有这样 WebView2 才会把拖入的
-    # 真实文件路径（含文件夹）交给后端 on_drag_drop 处理。
-    window.events.loaded += lambda: window.dom.body.on("drop", api.on_drag_drop)
     webview.start(gui="edgechromium")
 
 

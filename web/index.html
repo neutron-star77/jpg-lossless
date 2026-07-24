@@ -692,6 +692,9 @@ async function init(){
     f=>/已压缩|已生成|无损/.test(f.status||''), '已删除 {n} 张“成功压缩”的图片（保留未成功的）');
   document.getElementById('clearBtn').onclick=()=>removeByFilter(()=>true, '已清空 {n} 张图片');
 
+  // 注册拖放监听（在 pywebviewready 之后，安全时序）。失败也不影响其它功能。
+  if(api && api.enable_drop){ try{ api.enable_drop(); }catch(_){} }
+
   // 还原已保存的设置到界面
   document.getElementById('suffix').value=settings.suffix||'';
   document.getElementById('keep').checked=!!settings.keep;
