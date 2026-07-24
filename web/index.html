@@ -606,6 +606,7 @@ async function start(){
 // （避免在后台线程直接 evaluate_js 造成的 Windows/WebView2 死锁——即“点开始就卡死”）。
 function applyEvent(ev){
   if(ev.t==='log'){ log(ev.m); }
+  else if(ev.t==='files'){ addFiles(ev.rows); }
   else if(ev.t==='row'){
     const f=files.find(x=>x.src===ev.src);
     if(f){ f.old=ev.old; f.new=ev.new; f.status=ev.status; renderList(); }
@@ -660,63 +661,14 @@ function _hasFiles(e){
   if(!e.dataTransfer||!e.dataTransfer.types) return false;
   return Array.from(e.dataTransfer.types).indexOf('Files')>=0;
 }
-// 递归读取目录项（webkitGetAsEntry 支持目录，可拿到其中所有文件的 blob）
-function _entryFile(entry){
-  return new Promise((res,rej)=>entry.file(f=>res(f), rej));
-}
-function _readEntries(reader){
-  return new Promise((res,rej)=>reader.readEntries(es=>res(es), rej));
-}
-async function _walkEntry(entry, out){
-  if(entry.isFile){
-    const f=await _entryFile(entry);
-    if(f && /\.(jpe?g|png|jfif)$/i.test(f.name)) out.push(f);
-  }else if(entry.isDirectory){
-    const reader=entry.createReader();
-    let batch;
-    // readEntries 每次只返回部分条目，需循环直到为空
-    do{ batch=await _readEntries(reader); for(const e of batch) await _walkEntry(e, out); }
-    while(batch.length>0);
-  }
-}
-async function _gatherFiles(dt){
-  // 优先用 webkitGetAsEntry：能识别目录并递归读取其内文件
-  if(dt.items && dt.items.length && typeof dt.items[0].webkitGetAsEntry==='function'){
-    const arr=[];
-    for(const it of dt.items){
-      if(it.kind!=='file') continue;
-      let entry=null;
-      try{ entry=it.webkitGetAsEntry(); }catch(_){ entry=null; }
-      if(!entry) continue;
-      await _walkEntry(entry, arr);
-    }
-    if(arr.length) return arr;
-  }
-  // 回退：仅文件（不含目录）
-  try{
-    if(dt.items && dt.items.length){
-      const arr=[];
-      for(const it of dt.items){ if(it.kind==='file'){ const f=it.getAsFile(); if(f) arr.push(f); } }
-      if(arr.length) return arr;
-    }
-  }catch(_){}
-  return dt.files? Array.from(dt.files):[];
-}
+// 拖放：document 层只负责“允许放置 + 高亮”。真正的文件/文件夹由 pywebview 的
+// DOM drop（window.pywebview.dom.body.on('drop')）捕获【真实路径】后交给后端处理。
+// 关键点：在 pywebview/WebView2 里，document 层的 drop 事件拿不到系统拖入的文件
+// （dataTransfer.files 为空），必须经由 pywebview 的 DOM 事件才能获取真实路径（含文件夹）。
 document.addEventListener('dragenter',e=>{ if(!_hasFiles(e))return; e.preventDefault(); dz.classList.add('drag'); });
 document.addEventListener('dragover',e=>{ if(!_hasFiles(e))return; e.preventDefault(); e.dataTransfer.dropEffect='copy'; dz.classList.add('drag'); });
 document.addEventListener('dragleave',e=>{ if(!_hasFiles(e))return; e.preventDefault(); if(e.clientX<=0||e.clientY<=0) dz.classList.remove('drag'); });
-document.addEventListener('drop',async e=>{
-  if(!_hasFiles(e))return; e.preventDefault(); dz.classList.remove('drag');
-  const dropped=_gatherFiles(e.dataTransfer);
-  if(!dropped.length) return;
-  const payload=[];
-  for(const file of dropped){
-    if(!/\.(jpe?g|png|jfif)$/i.test(file.name))continue;
-    const b64=await new Promise(res=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.readAsDataURL(file);});
-    payload.push({name:file.name,data:b64});
-  }
-  if(payload.length){ const r=await api.add_drop(payload); if(r)addFiles(r); }
-});
+document.addEventListener('drop',e=>{ if(_hasFiles(e)){ e.preventDefault(); dz.classList.remove('drag'); } });
 
 // 初始化
 async function init(){

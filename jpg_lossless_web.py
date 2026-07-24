@@ -361,6 +361,32 @@ class Api:
             self._busy = False
             self._emit({"t": "finish", "m": msg})
 
+    # ---------- 拖放（pywebview DOM drop，可拿到真实路径，含文件夹） ----------
+    def on_drag_drop(self, event):
+        # 由 window.pywebview.dom.body.on('drop') 触发：
+        # pywebview 会把每个 file 的真实路径放进 event.dataTransfer.files[i].pywebviewFullPath
+        # （文件夹也会作为一项出现，pywebviewFullPath 指向该文件夹）
+        try:
+            files = ((event or {}).get("dataTransfer", {}) or {}).get("files", []) or []
+        except Exception:
+            files = []
+        paths = []
+        for f in files:
+            p = (f.get("pywebviewFullPath") or f.get("path") or "").strip()
+            if not p:
+                continue
+            if os.path.isdir(p) or p.lower().endswith(IMG_EXTS):
+                paths.append(p)
+        if not paths:
+            self._emit({"t": "log", "m": "拖入的内容不是图片/文件夹，已忽略"})
+            return
+        added = self._ingest(paths)
+        if added:
+            self._emit({"t": "files", "rows": added})
+            self._emit({"t": "log", "m": "拖入已添加 %d 个文件" % len(added)})
+        else:
+            self._emit({"t": "log", "m": "拖入的内容里没有可添加的图片"})
+
     def _run(self, settings):
         fmt_mode = _as_text(settings.get("target_fmt", "原格式"), "原格式")
         save_mode = _as_text(settings.get("save_mode", "原文件夹"), "原文件夹")
@@ -563,7 +589,7 @@ def main():
     # file:// 有正常 origin，api 方法注入可靠。前端再用轮询等待 api 就绪。
     html_path = resource_path(os.path.join("web", "index.html"))
     api = Api()
-    webview.create_window(
+    window = webview.create_window(
         "JpgLossless · 图片压缩工作台",
         url=html_path,
         js_api=api,
@@ -571,6 +597,9 @@ def main():
         height=760,
         min_size=(960, 640),
     )
+    # 通过 pywebview 的 DOM 事件注册 drop 监听：只有这样 WebView2 才会把拖入的
+    # 真实文件路径（含文件夹）交给后端 on_drag_drop 处理。
+    window.events.loaded += lambda: window.dom.body.on("drop", api.on_drag_drop)
     webview.start(gui="edgechromium")
 
 
