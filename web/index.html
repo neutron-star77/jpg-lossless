@@ -201,7 +201,19 @@
     box-shadow:inset 4px 4px 9px var(--neu-dark), inset -4px -4px 9px var(--neu-light);
   }
   .dropzone.drag{box-shadow:inset 6px 6px 12px var(--neu-dark), inset -6px -6px 12px var(--neu-light)}
-  .drop-hint{margin:auto; text-align:center; color:var(--muted); font-size:13px; padding:20px}
+  /* 拖入区“正在工作”动画：覆盖在拖入区顶部，显示 spinner + 进度文字 + 进度条 */
+  .drop-busy{position:absolute; left:0; right:0; top:0; bottom:0; display:none;
+    flex-direction:column; align-items:center; justify-content:center; gap:12px;
+    background:rgba(18,20,24,.55); backdrop-filter:blur(3px); border-radius:18px;
+    color:#fff; z-index:5; text-align:center; padding:16px}
+  .dropzone.working .drop-busy{display:flex}
+  .drop-busy .spinner{width:34px; height:34px; border:4px solid rgba(255,255,255,.25);
+    border-top-color:#5b9dff; border-radius:50%; animation:spin .8s linear infinite}
+  .drop-busy .txt{font-size:13px; font-weight:600; max-width:90%; line-height:1.5}
+  .drop-busy .bar{width:70%; height:6px; border-radius:6px; background:rgba(255,255,255,.22); overflow:hidden}
+  .drop-busy .bar i{display:block; height:100%; width:0%;
+    background:linear-gradient(90deg,#5b9dff,#7ee0a8); transition:width .25s ease}
+  @media (prefers-reduced-motion:reduce){ .drop-busy .spinner{animation-duration:1.6s} }
   .drop-hint b{color:var(--blue)}
   .thumbs{display:grid; grid-template-columns:repeat(auto-fill,minmax(86px,1fr)); gap:8px;
     overflow:auto; padding:4px; align-content:start}
@@ -389,6 +401,11 @@
           </div>
         </div>
         <div class="thumbs" id="thumbs" style="display:none"></div>
+        <div class="drop-busy" id="dropBusy">
+          <div class="spinner"></div>
+          <div class="txt" id="dropBusyTxt">处理中…</div>
+          <div class="bar"><i id="dropBusyBar"></i></div>
+        </div>
       </div>
     </aside>
   </main>
@@ -491,6 +508,24 @@ function log(msg){
 }
 function fmt(n){ if(n<1024)return n+'B'; if(n<1048576)return (n/1024).toFixed(1)+'KB';
   return (n/1048576).toFixed(2)+'MB'; }
+// ---- 拖入区“正在工作”动画控制 ----
+// busy=true 显示覆盖层并切换文案/进度；busy=false 隐藏。
+// pct(0~100) 可选，设置进度条；不传则进度条保持最后值（用于不确定阶段）。
+function _setDropBusy(busy, text, pct){
+  const dz=document.getElementById('dropzone');
+  const box=document.getElementById('dropBusy');
+  const txt=document.getElementById('dropBusyTxt');
+  const bar=document.getElementById('dropBusyBar');
+  if(!dz||!box) return;
+  if(busy){
+    dz.classList.add('working');
+    if(text!=null && txt) txt.textContent=text;
+    if(pct!=null && bar) bar.style.width=Math.max(0,Math.min(100,pct))+'%';
+  }else{
+    dz.classList.remove('working');
+    if(bar) bar.style.width='0%';
+  }
+}
 function savePct(old,neu){ if(!old)return '0%'; const s=(1-neu/old)*100;
   return (s>0?'-':'+')+Math.abs(s).toFixed(1)+'%'; }
 
@@ -696,12 +731,14 @@ async function _collectFiles(dt){
       if(entry.isDirectory) dirs++; else files++;
     }
     log(`拖入内容：${dirs} 个文件夹、${files} 个文件，正在遍历目录…`);
+    _setDropBusy(true, `正在遍历目录…（${dirs} 个文件夹 / ${files} 个文件）`);
     for(const entry of entries){
       const before=out.length;
       await _walkEntry(entry, out);
       if(entry.isDirectory) log(`  · 文件夹「${entry.name}」枚举到 ${out.length-before} 个文件`);
     }
     log(`目录遍历完成，共发现 ${out.length} 个文件。`);
+    _setDropBusy(true, `遍历完成，共 ${out.length} 个文件，准备读取…`);
   }
   // 回退：仅文件（不含目录）
   if(!out.length && dt.files && dt.files.length){
@@ -727,21 +764,25 @@ async function _addBlobs(blobs){
   if(total > 500*1048576){
     log(`⚠ 本次总量较大（${fmt(total)}），将分批处理，请耐心等待；建议单次控制在 500MB 内更流畅。`);
   }
+  _setDropBusy(true, `读取中… 0 / ${imgs.length} 张`, 0);
 
   const t0=Date.now();
-  let addedCount=0, batchNo=0, sentBytes=0;
+  let addedCount=0, batchNo=0, sentBytes=0, readCnt=0;
   let batch=[], batchBytes=0;
 
   async function flush(){
     if(!batch.length) return;
     batchNo++;
     const bn=batchNo, cnt=batch.length, bytes=batchBytes;
+    const pct = total>0 ? Math.round(sentBytes/total*100) : 0;
     log(`  · 第 ${bn} 批：发送 ${cnt} 张（约 ${fmt(bytes)}）到后端…`);
+    _setDropBusy(true, `上传第 ${bn} 批… 已发送 ${fmt(sentBytes)} / ${fmt(total)}`, pct);
     let r=null;
     try{
       r=await api.add_drop(batch);
     }catch(err){
       log(`  ✗ 第 ${bn} 批发送失败：${err}（可能是单批过大，尝试调小批量）`);
+      _setDropBusy(true, `⚠ 第 ${bn} 批发送失败，重试前请见日志`, pct);
       batch=[]; batchBytes=0; return;
     }
     if(r&&r.length){ addFiles(r); addedCount+=r.length;
@@ -757,6 +798,8 @@ async function _addBlobs(blobs){
     if(!d){ log(`  ✗ 读取为空：${f.name}`); continue; }
     batch.push({name:f.name, data:d});
     batchBytes+=(f.size|| (d.length*0.75));
+    readCnt++;
+    _setDropBusy(true, `读取中… ${readCnt} / ${imgs.length} 张`, Math.round(readCnt/imgs.length*100));
     // 达到批量阈值就先发送，避免累积过大
     if(batch.length>=BATCH_N || batchBytes>=BATCH_BYTES) await flush();
   }
@@ -766,22 +809,38 @@ async function _addBlobs(blobs){
   if(addedCount>0){
     log(`完成：共添加 ${addedCount} 张，耗时 ${sec}s。`);
     toast(`已添加 ${addedCount} 张`);
+    _setDropBusy(true, `完成！已添加 ${addedCount} 张（${sec}s）`, 100);
   }else{
     log(`结束：没有可添加的图片（耗时 ${sec}s）。`);
     toast('没有可添加的图片');
+    _setDropBusy(true, `没有可添加的图片（${sec}s）`, 100);
   }
+  // 收尾动画停留 800ms 让用户看清结果，再淡出
+  setTimeout(()=>_setDropBusy(false), 800);
 }
 // 隐藏的 <input> 选择文件/文件夹后，同样走 add_drop
-document.getElementById('fileInput').addEventListener('change', e=>_addBlobs(Array.from(e.target.files||[])));
-document.getElementById('dirInput').addEventListener('change', e=>_addBlobs(Array.from(e.target.files||[])));
+document.getElementById('fileInput').addEventListener('change', e=>{
+  _addBlobs(Array.from(e.target.files||[])).catch(err=>{ log(`✗ 选择文件失败：${err}`); _setDropBusy(false); });
+  e.target.value=''; // 允许重复选择同一文件
+});
+document.getElementById('dirInput').addEventListener('change', e=>{
+  _addBlobs(Array.from(e.target.files||[])).catch(err=>{ log(`✗ 选择文件夹失败：${err}`); _setDropBusy(false); });
+  e.target.value='';
+});
 document.addEventListener('dragenter',e=>{ if(!_hasFiles(e))return; e.preventDefault(); dz.classList.add('drag'); });
 document.addEventListener('dragover',e=>{ if(!_hasFiles(e))return; e.preventDefault(); e.dataTransfer.dropEffect='copy'; dz.classList.add('drag'); });
 document.addEventListener('dragleave',e=>{ if(!_hasFiles(e))return; e.preventDefault(); if(e.clientX<=0||e.clientY<=0) dz.classList.remove('drag'); });
 document.addEventListener('drop',async e=>{
   if(!_hasFiles(e)) return;
   e.preventDefault(); dz.classList.remove('drag');
-  const blobs=await _collectFiles(e.dataTransfer);
-  await _addBlobs(blobs);
+  try{
+    const blobs=await _collectFiles(e.dataTransfer);
+    await _addBlobs(blobs);
+  }catch(err){
+    log(`✗ 拖入处理失败：${err}`);
+    toast('拖入处理失败，详见日志');
+    _setDropBusy(false);
+  }
 });
 
 // 初始化
