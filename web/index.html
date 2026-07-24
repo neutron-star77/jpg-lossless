@@ -660,7 +660,39 @@ function _hasFiles(e){
   if(!e.dataTransfer||!e.dataTransfer.types) return false;
   return Array.from(e.dataTransfer.types).indexOf('Files')>=0;
 }
-function _gatherFiles(dt){
+// 递归读取目录项（webkitGetAsEntry 支持目录，可拿到其中所有文件的 blob）
+function _entryFile(entry){
+  return new Promise((res,rej)=>entry.file(f=>res(f), rej));
+}
+function _readEntries(reader){
+  return new Promise((res,rej)=>reader.readEntries(es=>res(es), rej));
+}
+async function _walkEntry(entry, out){
+  if(entry.isFile){
+    const f=await _entryFile(entry);
+    if(f && /\.(jpe?g|png|jfif)$/i.test(f.name)) out.push(f);
+  }else if(entry.isDirectory){
+    const reader=entry.createReader();
+    let batch;
+    // readEntries 每次只返回部分条目，需循环直到为空
+    do{ batch=await _readEntries(reader); for(const e of batch) await _walkEntry(e, out); }
+    while(batch.length>0);
+  }
+}
+async function _gatherFiles(dt){
+  // 优先用 webkitGetAsEntry：能识别目录并递归读取其内文件
+  if(dt.items && dt.items.length && typeof dt.items[0].webkitGetAsEntry==='function'){
+    const arr=[];
+    for(const it of dt.items){
+      if(it.kind!=='file') continue;
+      let entry=null;
+      try{ entry=it.webkitGetAsEntry(); }catch(_){ entry=null; }
+      if(!entry) continue;
+      await _walkEntry(entry, arr);
+    }
+    if(arr.length) return arr;
+  }
+  // 回退：仅文件（不含目录）
   try{
     if(dt.items && dt.items.length){
       const arr=[];
