@@ -12,3 +12,5 @@ __pycache__/
 
 # 压缩引擎（首次运行会自动下载，或自行放入 bin/）
 bin/ect.exe
+
+.codebuddy/
