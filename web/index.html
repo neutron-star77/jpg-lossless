@@ -79,6 +79,7 @@
   /* ---- 选项 ---- */
   .opt-grid{display:grid; grid-template-columns:auto 1fr; gap:9px 10px; align-items:center}
   .opt-grid label{color:var(--muted); white-space:nowrap}
+  .set-block .opt-grid label{display:inline-block; margin:0; font-weight:500; color:var(--muted)}
   .seg{display:inline-flex; gap:4px; padding:4px; border:0; border-radius:14px; background:var(--bg);
     box-shadow:inset 3px 3px 6px var(--neu-dark), inset -3px -3px 6px var(--neu-light)}
   .seg button{
@@ -110,7 +111,7 @@
   .mini-btn.danger{color:var(--err); background:#FBE9E7}
   .mini-btn.danger:hover{color:#fff; background:var(--err)}
   input[type=range]{width:170px; accent-color:var(--blue)}
-  .qval{font-family:var(--mono); color:var(--blue); width:30px; display:inline-block; text-align:right}
+  #qval{font-family:var(--mono); color:var(--blue); font-size:12px; width:4ch; text-align:right; border:1px solid var(--line); border-radius:6px; padding:1px 3px; background:var(--card); box-sizing:border-box}
   .check{display:flex; align-items:center; gap:7px; cursor:pointer; color:var(--ink)}
   .check input{accent-color:var(--blue); width:15px; height:15px}
 
@@ -328,7 +329,7 @@
       <div class="logo">▦</div>
       <div>
         <div class="title">JpgLossless</div>
-        <div class="subtitle">图片无损压缩工作台 v1.0</div>
+        <div class="subtitle">图片无损压缩工作台 v1.1</div>
       </div>
     </div>
     <button class="gear" id="gearBtn" title="设置">⚙</button>
@@ -370,18 +371,30 @@
           <span><label class="check"><input type="checkbox" id="rename">
             自动以 001、002… 顺序重命名输出文件</label></span>
 
-          <label>JPG 质量</label>
+          <label>压缩质量</label>
           <span><input type="range" id="quality" min="1" max="100" value="95">
-            <span class="qval" id="qval">95</span>
-            <span style="color:var(--muted); font-size:11.5px">（转 JPG / WebP 生效；WebP 设为 100 即无损）</span></span>
+            <input type="text" id="qval" class="qval" value="95" maxlength="3">
+            <span style="color:var(--muted); font-size:11.5px">（转 JPG / WebP / PNG 生效；100 = 无损）</span></span>
 
           <label>输出上限</label>
           <span><input type="text" id="maxKb" placeholder="KB，留空=不限" style="width:110px">
-            <span style="color:var(--muted); font-size:11.5px">超上限则降质(JPG)/保留</span></span>
+            <span style="color:var(--muted); font-size:11.5px">原格式为无损核心功能、忽略此上限；仅转 JPG / WebP / PNG 时按上限有损输出</span></span>
 
           <label>完成后</label>
           <span><label class="check"><input type="checkbox" id="autoOpen">
             自动打开输出文件夹</label></span>
+
+          <label>自动删除源</label>
+          <span>
+            <label class="check"><input type="checkbox" id="autoDelete"> 完成后自动删除源文件(只留压缩后图片)</label>
+            <span class="hint">会删除压缩前原图，勾选即弹窗提醒备份</span>
+          </span>
+
+          <label>断点续传</label>
+          <span>
+            <label class="check"><input type="checkbox" id="resume"> 重开自动跳过已压缩(断点续传)</label>
+            <button class="mini-btn" id="clearDone" style="margin-left:10px">清空断点记录</button>
+          </span>
         </div>
       </div>
 
@@ -423,6 +436,24 @@
     </aside>
   </main>
 
+  <div class="modal-mask" id="warnMask" style="display:none">
+    <div class="modal" style="width:480px">
+      <div class="modal-h"><span>将删除源文件</span>
+        <button class="modal-x" id="warnClose">✕</button></div>
+      <div class="modal-body">
+        <div class="set-help">
+          你已开启「完成后自动删除源文件」。压缩成功后，程序会<b>删除压缩前的原图</b>，仅保留压缩后的图片。<br><br>
+          此操作<b>不可恢复</b>，如有需要请先备份原图！<br><br>
+          （“原文件夹(覆盖)”且“原格式”时，源文件已被压缩结果直接覆盖，本就只留压缩后图片。）
+        </div>
+        <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:14px">
+          <button class="ghost-btn" id="warnCancel">取消（关闭该功能）</button>
+          <button class="ghost-btn" id="warnOk" style="color:#fff; background:var(--blue)">我已知晓，保持开启</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
 
   <!-- 设置弹窗：主题切换 + 运行日志 -->
@@ -448,7 +479,7 @@
         </div>
         <div class="set-row">
           <label>版本</label>
-          <span class="engine-info">v1.0</span>
+          <span class="engine-info">v1.1</span>
         </div>
         <div class="set-row">
           <label>压缩等级</label>
@@ -479,9 +510,17 @@
 
         <div class="set-block">
           <label>使用 / Bug 反馈</label>
+          <div class="set-help">
+            点「发送反馈」会<b>自动在浏览器打开预填好的 GitHub Issue 页面</b>，你只需点一下「Submit new issue」即可。
+            这种方式<b>无需本机安装邮件客户端、也无需任何 SMTP 配置</b>；GitHub 会在新 Issue 时<b>自动邮件通知仓库所有者</b>，
+            反馈会同步到你的邮箱。下方的「GitHub 仓库」一般无需修改（默认即本项目仓库）。
+          </div>
+          <div class="opt-grid" style="margin:6px 0">
+            <label>GitHub 仓库</label><input type="text" id="ghRepo" placeholder="neutron-star77/jpg-lossless" readonly title="反馈固定提交到作者的 GitHub 仓库，不可更改">
+          </div>
           <textarea class="fb-text" id="fbText" placeholder="请描述你遇到的问题或改进建议…"></textarea>
           <div class="fb-row">
-            <span class="fb-to">收件：your-email@example.com</span>
+            <span class="fb-to" id="fbToLabel">提交到：neutron-star77/jpg-lossless</span>
             <button class="ghost-btn" id="fbSend" style="margin-left:auto">发送反馈</button>
           </div>
         </div>
@@ -508,7 +547,9 @@ let selected = null;
 let settings = {
   save_mode:"原文件夹", out_dir:"", target_fmt:"原格式",
   suffix:"", keep:false, quality:95, auto_open:false, max_kb:0,
-  level:-2, threads:0, theme:"neu-light", rename:false
+  level:-2, threads:0, theme:"neu-light", rename:false,
+  auto_delete:false, resume:true,
+  gh_repo:"neutron-star77/jpg-lossless"
 };
 
 function toast(msg){
@@ -666,8 +707,26 @@ function chooseFiles(){
   inp.value=''; inp.click();
 }
 function chooseDirs(){
-  const inp=document.getElementById('dirInput');
-  inp.value=''; inp.click();
+  // 优先用原生文件夹对话框拿到真实路径（支持断点续传/跳过已压缩）；
+  // 若失败（如某些环境下原生对话框跨线程不可用）则回退到 <input webkitdirectory> 拖入方式。
+  (async()=>{
+    try{
+      const r=await api.choose_dirs();
+      if(r && r.paths && r.paths.length){
+        log('正在读取文件夹（已压缩的会自动跳过）…');
+        await api.add_local_paths(r.paths);
+        return;
+      }
+    }catch(e){ log('原生文件夹选择失败，回退到拖入方式：'+e); }
+    const inp=document.getElementById('dirInput');
+    inp.value=''; inp.click();
+  })();
+}
+function saveGh(){
+  const repo=document.getElementById('ghRepo').value.trim()||'neutron-star77/jpg-lossless';
+  settings.gh_repo=repo;
+  document.getElementById('fbToLabel').textContent='提交到：'+repo;
+  persist();
 }
 async function start(){
   if(!files.length){ toast('请先选择/拖入文件'); return; }
@@ -932,17 +991,32 @@ async function init(){
   document.getElementById('suffix').oninput=e=>{settings.suffix=e.target.value;persist();};
   document.getElementById('keep').onchange=e=>{settings.keep=e.target.checked;persist();};
   document.getElementById('rename').onchange=e=>{settings.rename=e.target.checked;persist();};
-  document.getElementById('quality').oninput=e=>{settings.quality=+e.target.value;
-    document.getElementById('qval').textContent=e.target.value;persist();};
+  function setQuality(v){ v=Math.max(1,Math.min(100,parseInt(v,10)||1)); settings.quality=v;
+    document.getElementById('quality').value=v; document.getElementById('qval').value=v; persist(); }
+  document.getElementById('quality').oninput=e=>setQuality(e.target.value);
+  document.getElementById('qval').oninput=e=>setQuality(e.target.value);
   document.getElementById('maxKb').oninput=e=>{settings.max_kb=parseInt(e.target.value,10)||0;persist();};
   document.getElementById('level').onchange=e=>{settings.level=parseInt(e.target.value,10)||-2;persist();};
   document.getElementById('threads').oninput=e=>{settings.threads=parseInt(e.target.value,10)||0;persist();};
   document.getElementById('autoOpen').onchange=e=>{settings.auto_open=e.target.checked;persist();};
+  document.getElementById('autoDelete').onchange=e=>{ const v=e.target.checked; settings.auto_delete=v; persist(); if(v) showWarn(); };
+  document.getElementById('resume').onchange=e=>{ settings.resume=e.target.checked; persist(); };
+  document.getElementById('clearDone').onclick=async()=>{ try{ await api.clear_done(); toast('已清空断点记录'); }catch(_){} };
   document.getElementById('browseBtn').onclick=async()=>{ const d=await api.choose_outdir();
     if(d){ const p=Array.isArray(d)?(Array.isArray(d[0])?d[0][0]:d[0]):d; settings.out_dir=p; document.getElementById('outDir').value=p; persist(); } };
   document.getElementById('startBtn').onclick=start;
   document.getElementById('pickFiles').onclick=chooseFiles;
   document.getElementById('pickDirs').onclick=chooseDirs;
+  // 警告弹窗（自动删除源文件）
+  const warnMask=document.getElementById('warnMask');
+  document.getElementById('warnClose').onclick=closeWarn;
+  document.getElementById('warnCancel').onclick=closeWarn;
+  document.getElementById('warnOk').onclick=()=>{ warnMask.style.display='none'; };
+  warnMask.addEventListener('click',e=>{ if(e.target===warnMask) closeWarn(); });
+  function showWarn(){ warnMask.style.display='flex'; }
+  function closeWarn(){ warnMask.style.display='none'; document.getElementById('autoDelete').checked=false; settings.auto_delete=false; persist(); }
+  // GitHub 仓库（反馈提交目标）
+  document.getElementById('ghRepo').onchange=saveGh;
   document.getElementById('delOkBtn').onclick=()=>removeByFilter(
     f=>/已压缩|已生成|无损/.test(f.status||''), '已删除 {n} 张“成功压缩”的图片（保留未成功的）');
   document.getElementById('clearBtn').onclick=()=>removeByFilter(()=>true, '已清空 {n} 张图片');
@@ -952,8 +1026,10 @@ async function init(){
   document.getElementById('keep').checked=!!settings.keep;
   document.getElementById('rename').checked=!!settings.rename;
   document.getElementById('quality').value=settings.quality||95;
-  document.getElementById('qval').textContent=settings.quality||95;
+  document.getElementById('qval').value=settings.quality||95;
   document.getElementById('autoOpen').checked=!!settings.auto_open;
+  document.getElementById('autoDelete').checked=!!settings.auto_delete;
+  document.getElementById('resume').checked=settings.resume!==false;
   document.getElementById('maxKb').value=settings.max_kb||'';
   document.getElementById('level').value=settings.level||-2;
   document.getElementById('threads').value=settings.threads||'';
@@ -1004,16 +1080,17 @@ async function init(){
   mask.addEventListener('click',e=>{ if(e.target===mask) mask.style.display='none'; });
   document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&mask.style.display!=='none') mask.style.display='none'; });
 
-  // 反馈：调起邮件客户端发送到指定邮箱
+  // 反馈：点发送 → 浏览器打开预填好的 GitHub Issue 页面（零配置、无需邮件客户端）
   document.getElementById('fbSend').onclick=async()=>{
     const t=document.getElementById('fbText').value.trim();
     if(!t){ toast('请先填写反馈内容'); return; }
-    const body=t+'\n\n— 来自 JpgLossless v1.0';
+    saveGh();  // 发送前确保 GitHub 仓库配置已写入
+    const body=t+'\n\n— 来自 JpgLossless v1.1';
     try{
-      const r=await api.send_feedback('JpgLossless 反馈 v1.0', body);
-      if(r&&r.ok) toast('已调起邮件客户端，请发送');
-      else toast('调起邮件失败：'+(r&&r.error||'未知错误'));
-    }catch(e){ toast('发送失败：'+e); }
+      const r=await api.send_feedback('JpgLossless 反馈 v1.1', body, settings.gh_repo);
+      if(r&&r.ok) toast('已打开 GitHub Issue 页面，请在浏览器点「Submit new issue」 ✓');
+      else toast('打开失败：'+(r&&r.error||'未知错误'));
+    }catch(e){ toast('打开失败：'+e); }
   };
   try{ const cfg=await api.get_config(); Object.assign(settings,cfg); }catch(e){}
   // 兼容旧版仅有 light/dark 的存档：统一迁到 classic-* 家族
@@ -1027,8 +1104,13 @@ async function init(){
   document.getElementById('keep').checked=!!settings.keep;
   document.getElementById('rename').checked=!!settings.rename;
   document.getElementById('quality').value=settings.quality||95;
-  document.getElementById('qval').textContent=settings.quality||95;
+  document.getElementById('qval').value=settings.quality||95;
   document.getElementById('autoOpen').checked=!!settings.auto_open;
+  document.getElementById('autoDelete').checked=!!settings.auto_delete;
+  document.getElementById('resume').checked=settings.resume!==false;
+  const _gh=settings.gh_repo||'neutron-star77/jpg-lossless';
+  document.getElementById('ghRepo').value=_gh;
+  document.getElementById('fbToLabel').textContent='提交到：'+_gh;
   document.getElementById('rename').checked=!!settings.rename;
   document.getElementById('dirWrap').style.display=(settings.save_mode==='自定义文件夹')?'inline':'none';
   document.getElementById('outDir').value=settings.out_dir||'';

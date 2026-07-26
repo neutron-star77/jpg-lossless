@@ -16,7 +16,7 @@
 ### 需要下载什么？
 
 1. **`JpgLossless.exe`**（必需）：在仓库的 **Releases** 里下载——
-   - GitHub：进仓库主页，点右侧的 **Releases**（或「发布」），找到最新版本（如 `v1.0`），在 `Assets` 里点 `JpgLossless.exe`。
+   - GitHub：进仓库主页，点右侧的 **Releases**（或「发布」），找到最新版本（如 `v1.1`），在 `Assets` 里点 `JpgLossless.exe`。
    - Gitee：进仓库主页，点 **发行版**，同样找到最新版本下载 `JpgLossless.exe`。
    - 它是单文件，已内置压缩引擎，不依赖仓库里的 `bin/ect.exe` 目录。
 2. **Microsoft Edge WebView2 运行时**（仅在双击 exe 报错时按需安装）：Windows 10/11 系统通常已自带；若双击后提示缺少 WebView2，请到微软官网下载安装「WebView2 Runtime」（Evergreen Bootstrapper）即可。

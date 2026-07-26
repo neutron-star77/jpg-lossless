@@ -6,7 +6,6 @@
 输出选项：
   · 保存位置：原文件夹(覆盖) / 自定义文件夹
   · 目标格式：原格式(无损) / WebP(无损) / PNG(无损) / JPG(有损, 质量可调)
-  · 说明：JPEG/PNG 走 ect 原地无损最优；BMP/TIFF 在「原格式」下无损转 PNG
   · 文件名后缀：自定义输出文件名附加词（留空=覆盖或原名）
   · 保持原目录结构：自定义文件夹输出时保留子目录层级
   · JPG 质量滑块：转 JPG 时生效（1-100，默认 95）
@@ -15,7 +14,7 @@
   · 处理完成后自动打开输出文件夹
   · 记住上次设置（config.json 持久化）
   · 支持把文件/文件夹直接拖入窗口
-引擎：ect（自动下载，JPEG/PNG 原地无损最优）；BMP/TIFF 经 Pillow 转 PNG/WebP 无损；转格式用 Pillow(libwebp)
+引擎：ect（自动下载，JPEG/PNG 原地无损最优）；转格式用 Pillow(libwebp)
 
 运行：  python jpg_lossless_gui.py
 打包：  pyinstaller --onefile --noconsole --name JpgLossless --distpath . ^
@@ -39,9 +38,7 @@ BIN_DIR = os.path.join(APP_DIR, "bin")
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 
 ENGINE_ORDER = {"ect": 0, "jpegtran": 1, "jpegoptim": 2}
-IMG_EXTS = (".jpg", ".jpeg", ".png", ".jpe", ".jfif", ".bmp", ".tif", ".tiff")
-# 这些格式 ect 不支持原地无损，只能经 Pillow 转 PNG/WebP（像素无损）
-NO_INPLACE_EXTS = (".bmp", ".tif", ".tiff")
+IMG_EXTS = (".jpg", ".jpeg", ".png", ".jpe", ".jfif")
 FMT_EXT = {"WebP": ".webp", "PNG": ".png", "JPG": ".jpg"}
 
 # 视觉主题：克制的深石板头 + 蓝绿强调，刻意避开“奶油色+衬线”等 AI 模板套路
@@ -162,28 +159,19 @@ def to_webp_lossless(src, dst):
         im.save(dst, "WEBP", lossless=True, method=6)
 
 
-def to_png_lossless(src, dst):
-    from PIL import Image, ImageOps
-    with Image.open(src) as im:
-        im = ImageOps.exif_transpose(im)
-        im.save(dst, "PNG")
-
-
 def compress_one(src, dst, fmt, eng, quality):
     """按当前设置把 src 压缩到 dst，返回新文件大小（字节）。"""
     ext = os.path.splitext(src)[1].lower() if fmt == "原格式" else FMT_EXT[fmt]
     if fmt == "原格式":
-        if ext in NO_INPLACE_EXTS:
-            # BMP/TIFF 无法原地无损，转 PNG（像素无损）
-            to_png_lossless(src, dst)
-            return os.path.getsize(dst)
         if "ect" not in os.path.basename(eng).lower() and ext == ".png":
             raise RuntimeError("该引擎不支持 PNG，需 ect 引擎")
         run_engine(eng, src, dst)
     elif fmt == "WebP":
         to_webp_lossless(src, dst)
     elif fmt == "PNG":
-        to_png_lossless(src, dst)
+        from PIL import Image, ImageOps
+        with Image.open(src) as im:
+            ImageOps.exif_transpose(im).save(dst, "PNG")
     elif fmt == "JPG":
         from PIL import Image, ImageOps
         with Image.open(src) as im:
@@ -272,7 +260,7 @@ class App:
         header.pack_propagate(False)
         tk.Label(header, text="JpgLossless", bg=C_HEADER, fg="white",
                  font=(FONT_UI, 16, "bold")).pack(side="left", padx=16)
-        tk.Label(header, text="图片无损压缩 · JPG/PNG/BMP/TIFF · WebP/PNG 转码",
+        tk.Label(header, text="图片无损压缩 · WebP / PNG / JPG 转码",
                  bg=C_HEADER, fg=C_SUBTLE, font=(FONT_UI, 10)).pack(side="left")
         tk.Frame(self.root, bg=C_ACCENT, height=3).pack(fill="x")
 
@@ -295,7 +283,8 @@ class App:
         self.build_right(right)
 
         for v in (self.save_mode_var, self.target_fmt_var, self.suffix_var,
-                  self.keep_var, self.quality_var, self.auto_open_var, self.out_dir_var):
+                  self.keep_var, self.quality_var, self.auto_open_var,
+                  self.auto_delete_var, self.skip_thumb_var, self.out_dir_var):
             try:
                 v.trace_add("write", lambda *a: self.save_config())
             except Exception:
@@ -339,14 +328,29 @@ class App:
 
         row4 = ttk.Frame(opt)
         row4.pack(fill="x", pady=3)
-        ttk.Label(row4, text="JPG 质量：").pack(side="left")
+        ttk.Label(row4, text="压缩质量：").pack(side="left")
         self.quality_var = tk.IntVar(value=95)
-        self.quality_label = ttk.Label(row4, text="95", width=4)
-        self.quality_label.pack(side="left", padx=(0, 6))
+        self.quality_entry_var = tk.StringVar(value="95")
+
+        def on_q_scale(v):
+            self.quality_entry_var.set(str(int(float(v))))
+
+        def commit_q_entry(*a):
+            try:
+                val = max(1, min(100, int(float(self.quality_entry_var.get()))))
+            except ValueError:
+                val = self.quality_var.get()
+            self.quality_var.set(val)
+            self.quality_entry_var.set(str(val))
+
+        self.quality_entry = ttk.Entry(row4, textvariable=self.quality_entry_var, width=4)
+        self.quality_entry.pack(side="left", padx=(0, 6))
+        self.quality_entry.bind("<Return>", commit_q_entry)
+        self.quality_entry.bind("<FocusOut>", commit_q_entry)
         ttk.Scale(row4, from_=1, to=100, variable=self.quality_var, orient="horizontal",
-                  length=220, command=lambda v: self.quality_label.configure(text=str(int(float(v))))).pack(side="left")
-        ttk.Label(row4, text="（仅转 JPG 时生效）").pack(side="left", padx=6)
-        self.quality_var.trace_add("write", lambda *a: self.quality_label.configure(text=str(self.quality_var.get())))
+                  length=220, command=on_q_scale).pack(side="left")
+        ttk.Label(row4, text="（转 JPG / WebP / PNG 生效；100=无损）").pack(side="left", padx=6)
+        self.quality_var.trace_add("write", lambda *a: self.quality_entry_var.set(str(self.quality_var.get())))
 
         row5 = ttk.Frame(opt)
         row5.pack(fill="x", pady=3)
@@ -354,6 +358,16 @@ class App:
         ttk.Checkbutton(row5, text="处理完成后自动打开输出文件夹",
                         variable=self.auto_open_var).pack(side="left")
         ttk.Button(row5, text="预览选中对比", command=self.preview_selected).pack(side="left", padx=12)
+
+        row6 = ttk.Frame(opt)
+        row6.pack(fill="x", pady=3)
+        self.auto_delete_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(row6, text="完成后自动删除源文件(只留压缩后图片)",
+                        variable=self.auto_delete_var,
+                        command=self.on_auto_delete_toggle).pack(side="left")
+        self.skip_thumb_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(row6, text="大批量模式(不生成缩略图)",
+                        variable=self.skip_thumb_var).pack(side="left", padx=(16, 0))
 
         cols = ("name", "old", "new", "save", "status")
         self.tree = ttk.Treeview(parent, columns=cols, show="headings", height=12)
@@ -464,6 +478,16 @@ class App:
         except Exception as e:
             self.log_msg("拖放初始化失败（不影响其他功能）：" + str(e))
 
+    def on_auto_delete_toggle(self):
+        if self.auto_delete_var.get():
+            messagebox.showwarning(
+                "将删除源文件",
+                "你已开启「完成后自动删除源文件」。\n\n"
+                "压缩成功后，程序会删除压缩前的原图，仅保留压缩后的图片。\n"
+                "此操作不可恢复，如有需要请先备份原图！\n\n"
+                "（注：“原文件夹(覆盖)”且“原格式”时，源文件已被压缩结果直接覆盖，\n"
+                " 本就只留下压缩后图片，因此不会额外删除。）")
+
     def on_save_mode(self):
         st = "normal" if self.save_mode_var.get() == "自定义文件夹" else "disabled"
         self.dir_entry.configure(state=st)
@@ -486,6 +510,8 @@ class App:
             "keep": self.keep_var.get(),
             "quality": self.quality_var.get(),
             "auto_open": self.auto_open_var.get(),
+            "auto_delete": self.auto_delete_var.get(),
+            "skip_thumb": self.skip_thumb_var.get(),
         }
         try:
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -505,7 +531,9 @@ class App:
         self.keep_var.set(bool(cfg.get("keep", False)))
         self.quality_var.set(int(cfg.get("quality", 95)))
         self.auto_open_var.set(bool(cfg.get("auto_open", False)))
-        self.quality_label.configure(text=str(self.quality_var.get()))
+        self.auto_delete_var.set(bool(cfg.get("auto_delete", False)))
+        self.skip_thumb_var.set(bool(cfg.get("skip_thumb", False)))
+        self.quality_entry_var.set(str(self.quality_var.get()))
         self.on_save_mode()
 
     # ---------------- 日志 / 引擎 ----------------
@@ -525,7 +553,7 @@ class App:
     # ---------------- 选择 / 添加 ----------------
     def pick_files(self):
         paths = filedialog.askopenfilenames(
-            filetypes=[("图片", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff"), ("All", "*.*")])
+            filetypes=[("图片", "*.jpg *.jpeg *.png"), ("All", "*.*")])
         self.add_files(list(paths))
 
     def pick_dir(self):
@@ -560,6 +588,10 @@ class App:
             pass
 
     def add_thumb(self, src):
+        if self.skip_thumb_var.get():
+            return
+        if len(self.thumb_photos) >= 2000:  # 安全上限：海量文件时不生成缩略图，避免撑爆内存
+            return
         try:
             from PIL import Image, ImageTk
             im = Image.open(src)
@@ -646,10 +678,7 @@ class App:
     def _out_ext(self, src):
         fmt_mode = self.target_fmt_var.get()
         if fmt_mode == "原格式":
-            ext = os.path.splitext(src)[1].lower()
-            if ext in NO_INPLACE_EXTS:
-                return ".png"  # BMP/TIFF 原格式模式 → 无损转 PNG
-            return ext
+            return os.path.splitext(src)[1].lower()
         return FMT_EXT[fmt_mode]
 
     def preview_selected(self):
@@ -661,9 +690,7 @@ class App:
         src = self.tree.item(sel[0], "values")[0]
         self.show_orig(src)
         fmt_mode = self.target_fmt_var.get()
-        src_ext = os.path.splitext(src)[1].lower()
-        # 原格式 + 非 BMP/TIFF 才需要 ect 引擎；BMP/TIFF 用 Pillow 转 PNG
-        if fmt_mode == "原格式" and src_ext not in NO_INPLACE_EXTS and not self.engine:
+        if fmt_mode == "原格式" and not self.engine:
             messagebox.showerror("提示", "原格式无损需要引擎，请先点“开始压缩”以自动下载，或选择转格式模式")
             return
         fd, tmp = tempfile.mkstemp(suffix=self._out_ext(src))
@@ -694,25 +721,18 @@ class App:
             messagebox.showerror("提示", "请先选择自定义输出文件夹")
             return
         self.save_config()
-        # BMP/TIFF 经 Pillow 转码需 Pillow；其余转格式模式(WebP/PNG/JPG)也需 Pillow
-        needs_pil = (fmt_mode != "原格式") or any(
-            os.path.splitext(s)[1].lower() in NO_INPLACE_EXTS for s, _ in self.files)
-        if needs_pil:
-            try:
-                import PIL  # noqa
-            except ImportError:
-                messagebox.showerror("缺少依赖", "处理这些图片需要 Pillow：\npip install pillow")
-                return
-        # 仅当存在需要 ect 引擎的格式(JPEG/PNG)且引擎缺失时才下载
-        needs_engine = any(
-            os.path.splitext(s)[1].lower() not in NO_INPLACE_EXTS for s, _ in self.files)
-        if fmt_mode == "原格式" and needs_engine:
+        if fmt_mode == "原格式":
             if not self.engine:
                 self.log_msg("未检测到引擎，尝试自动下载 ect…")
                 threading.Thread(target=self.install_and_run, daemon=True).start()
             else:
                 threading.Thread(target=self.process, daemon=True).start()
         else:
+            try:
+                import PIL  # noqa
+            except ImportError:
+                messagebox.showerror("缺少依赖", "转格式模式需要 Pillow：\npip install pillow")
+                return
             threading.Thread(target=self.process, daemon=True).start()
 
     def install_and_run(self):
@@ -742,9 +762,6 @@ class App:
 
         if fmt_mode == "JPG":
             self.queue.put(("log", f"注意：转 JPG 为有损压缩（quality={quality}）", ""))
-        if fmt_mode == "原格式" and any(
-                os.path.splitext(s)[1].lower() in NO_INPLACE_EXTS for s, _ in self.files):
-            self.queue.put(("log", "BMP/TIFF 在「原格式」下将无损转为 PNG（ect 不支持其原地压缩）", ""))
 
         total = len(self.files)
         self.queue.put(("progress_max", total, ""))
@@ -768,7 +785,8 @@ class App:
 
                 if fmt_mode == "原格式":
                     if "ect" not in os.path.basename(eng).lower() and ext == ".png":
-                        self.queue.put(("row", src, (fmt(old), "-", "-", "跳过:需ect引擎")))
+                        status = "跳过:需ect引擎"
+                        new = old
                     elif out_path == src:
                         fd, tmp = tempfile.mkstemp(suffix=ext)
                         os.close(fd)
@@ -776,21 +794,30 @@ class App:
                         if new < old:
                             shutil.move(tmp, src)
                             self.output_map[src] = src
-                            self.queue.put(("row", src, (fmt(old), fmt(new), fmt_save(old, new), "已压缩")))
+                            status = "已压缩"
                         else:
                             os.remove(tmp)
-                            self.queue.put(("row", src, (fmt(old), fmt(old), "0%", "已最优")))
+                            status = "已最优"
                     else:
                         compress_one(src, out_path, fmt_mode, eng, quality)
                         new = os.path.getsize(out_path)
                         self.output_map[src] = out_path
-                        self.queue.put(("row", src, (fmt(old), fmt(new), fmt_save(old, new), "已生成(原图保留)")))
+                        status = "已生成(原图保留)"
                 else:
                     compress_one(src, out_path, fmt_mode, eng, quality)
                     new = os.path.getsize(out_path)
                     self.output_map[src] = out_path
-                    self.queue.put(("row", src, (fmt(old), fmt(new), fmt_save(old, new),
-                                                 {"WebP": "WebP无损", "PNG": "PNG无损", "JPG": "JPG有损"}[fmt_mode])))
+                    status = {"WebP": "WebP无损", "PNG": "PNG无损", "JPG": "JPG有损"}[fmt_mode]
+                self.queue.put(("row", src, (fmt(old), fmt(new), fmt_save(old, new), status)))
+                # 自动删除源文件：仅当成功生成了「与源不同路径」的压缩结果时才删除源
+                ok = not status.startswith("失败")
+                if (self.auto_delete_var.get() and ok and out_path != src
+                        and os.path.isfile(out_path) and os.path.isfile(src)):
+                    try:
+                        os.remove(src)
+                        self.queue.put(("log", "已删除源文件：" + os.path.basename(src), ""))
+                    except Exception as e:
+                        self.queue.put(("log", "删除源文件失败 " + os.path.basename(src) + "：" + str(e)[:40], ""))
             except Exception as e:
                 self.queue.put(("row", src, ("-", "-", "-", "失败:" + str(e)[:40])))
             if first_out_dir is None:

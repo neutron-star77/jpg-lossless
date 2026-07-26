@@ -22,6 +22,8 @@ import queue
 import threading
 import tempfile
 import subprocess
+import platform
+import webbrowser
 # Windows 下隐藏 ect/jpegtran 子进程的黑窗口；非 Windows 回退为 0（无此标志）
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 import urllib.request
@@ -41,6 +43,7 @@ APP_DIR = _app_dir()
 BIN_DIR = os.path.join(APP_DIR, "bin")
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 FAILED_PATH = os.path.join(APP_DIR, "failed.json")
+DONE_PATH = os.path.join(APP_DIR, "done.log")
 
 ENGINE_ORDER = {"ect": 0, "jpegtran": 1, "jpegoptim": 2}
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".jpe", ".jfif")
@@ -252,6 +255,9 @@ class Api:
         self._busy = False  # 是否有压缩任务在运行（用于前端看门狗恢复卡死的按钮）
         self._load_config()
         self._load_failed()
+        self._load_done()
+        self._done_buf = []
+        self._done_lock = threading.Lock()
 
     # ---------- 基础工具 ----------
     def _emit(self, ev):
@@ -300,6 +306,7 @@ class Api:
         if not paths:
             return []
         added = []
+        skipped = 0
         for p in paths:
             entries = []
             if folders or os.path.isdir(p):
@@ -312,9 +319,15 @@ class Api:
             for src, base in entries:
                 if any(src == s for s, _ in self.files):
                     continue
+                # 断点续传：跳过本次会话/上次已成功压缩的图片（resume 开启时）
+                if self.config.get("resume", True) and src in self._done:
+                    skipped += 1
+                    continue
                 self.files.append((src, base))
                 added.append({"src": src, "name": os.path.basename(src),
                               "thumb": self._thumb_b64(src)})
+        if skipped:
+            self._emit({"t": "log", "m": "跳过 %d 张已压缩(断点续传)" % skipped})
         return added
 
     # ---------- 配置 ----------
@@ -330,7 +343,9 @@ class Api:
 
     def set_config(self, cfg):
         try:
-            self.config = dict(cfg)
+            # 合并而非整体替换：保留前端未管理的键(如 panels/show_files/free_layout 等)
+            if isinstance(cfg, dict):
+                self.config.update(cfg)
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, ensure_ascii=False, indent=2)
         except Exception:
@@ -367,6 +382,41 @@ class Api:
                 old = info.get("old", 0)
                 new = info.get("new", 0)
                 self.results[src] = (src, info.get("status", "失败"), False, old, new)
+
+    def _load_done(self):
+        self._done = set()
+        try:
+            if os.path.exists(DONE_PATH):
+                with open(DONE_PATH, encoding="utf-8") as f:
+                    for line in f:
+                        p = line.rstrip("\n")
+                        if p:
+                            self._done.add(p)
+        except Exception:
+            self._done = set()
+
+    def _mark_done(self, src):
+        if not src:
+            return
+        with self._done_lock:
+            if src in self._done:
+                return
+            self._done.add(src)
+            self._done_buf.append(src)
+            if len(self._done_buf) >= 200:
+                self._flush_done()
+
+    def _flush_done(self):
+        with self._done_lock:
+            if not self._done_buf:
+                return
+            try:
+                with open(DONE_PATH, "a", encoding="utf-8") as f:
+                    for p in self._done_buf:
+                        f.write(p + "\n")
+            except Exception:
+                pass
+            self._done_buf = []
 
     def _save_failed(self):
         try:
@@ -432,17 +482,41 @@ class Api:
     def engine(self):
         return os.path.basename(self.engine_exe) if self.engine_exe else "未安装（将自动下载）"
 
-    def send_feedback(self, subject, body):
-        # 调起系统默认邮件客户端，发送到指定邮箱
-        addr = "359083341@qq.com"
+    def _gh_repo(self, override=None):
+        # 返回 "owner/repo" 形式；支持填完整 URL 或带 github.com 的写法
+        r = _as_text(override if override is not None else self.config.get("gh_repo"),
+                     "neutron-star77/jpg-lossless").strip().strip("/")
+        if "github.com" in r:
+            m = re.search(r"github\.com/([^/]+/[^/#?]+)", r)
+            if m:
+                r = m.group(1)
+        r = r.split("#")[0].split("?")[0].strip("/")
+        if r.count("/") != 1:
+            r = "neutron-star77/jpg-lossless"
+        return r
+
+    def send_feedback(self, subject, body, repo=None):
+        # 通过 GitHub Issue 反馈：打开预填好的「新 Issue」页面。
+        # 优点：无需本机邮件客户端、无需配置 SMTP，浏览器即可使用；
+        # GitHub 会在新 Issue 时自动邮件通知仓库所有者，满足「同步到邮箱」。
+        repo = self._gh_repo(repo)
+        title = (subject or "JpgLossless 反馈")[:120]
+        text = (body or "")[:4000]
         try:
-            subject = urllib.parse.quote((subject or "")[:120])
-            body = urllib.parse.quote((body or "")[:1500])
-            link = "mailto:%s?subject=%s&body=%s" % (addr, subject, body)
-            os.startfile(link)
-            return {"ok": True}
+            env = "环境：%s %s / Python %s / 引擎 %s" % (
+                platform.system(), platform.release(),
+                platform.python_version(), self.engine())
+        except Exception:
+            env = ""
+        full = text + ("\n\n---\n" + env if env else "")
+        url = "https://github.com/%s/issues/new?title=%s&body=%s" % (
+            repo, urllib.parse.quote(title), urllib.parse.quote(full))
+        try:
+            webbrowser.open(url, new=2)
+            return {"ok": True, "method": "github-issue",
+                    "msg": "已打开 GitHub Issue 页面，请点「Submit new issue」提交（仓库：%s）" % repo}
         except Exception as e:
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "method": "github-issue", "error": str(e)[:160]}
 
     def _flat_paths(self, v):
         # 把对话框返回值（str / list / tuple，可能嵌套）展平为字符串路径列表
@@ -500,18 +574,17 @@ class Api:
     def choose_dirs(self):
         path = self._pick_folder()
         if not path:
-            return []
-        out = []
-        n = 0
-        for root, _, fs in os.walk(path):
-            for f in fs:
-                n += 1
-                if n % 200 == 0:  # 每扫 200 个文件上报一次，避免事件刷屏
-                    self._emit({"t": "scan", "n": n})
-                if f.lower().endswith(IMG_EXTS):
-                    out.append(os.path.join(root, f))
-        self._emit({"t": "scan", "n": n})  # 结束时再报一次最终值
-        return out
+            return {"paths": []}
+        # 返回真实文件夹路径，由 add_local_paths 扫描并带入断点续传(可跳过已压缩)
+        return {"paths": [path]}
+
+    def add_local_paths(self, paths):
+        """按真实路径批量添加(支持文件夹/多文件)，并应用断点续传跳过。"""
+        if isinstance(paths, str):
+            paths = [paths]
+        added = self._ingest(paths, folders=True)
+        self._emit({"t": "files", "rows": added})
+        return {"added": len(added)}
 
     def choose_outdir(self):
         return self._pick_folder()
@@ -533,6 +606,15 @@ class Api:
         # 仅清空软件内的文件清单记录与处理状态（不动磁盘上的任何文件）
         self.files = []
         self.results = {}
+        # 同时清空断点续传记录，使“全部清空”后可重新处理
+        with self._done_lock:
+            self._done = set()
+            self._done_buf = []
+            try:
+                if os.path.exists(DONE_PATH):
+                    open(DONE_PATH, "w", encoding="utf-8").close()
+            except Exception:
+                pass
         return {"ok": True, "count": 0}
 
     def clear_done(self):
@@ -547,6 +629,15 @@ class Api:
         self.files = kept
         self.results = {k: v for k, v in self.results.items()
                         if any(k == s for s, _ in kept)}
+        # 同时清空断点续传记录（已压缩文件列表），以便下次重新处理
+        with self._done_lock:
+            self._done = set()
+            self._done_buf = []
+            try:
+                if os.path.exists(DONE_PATH):
+                    open(DONE_PATH, "w", encoding="utf-8").close()
+            except Exception:
+                pass
         # 注意：不清空 failed.json，失败的图片记录保留，重启后仍在。
         return {"removed": removed, "kept": len(kept)}
 
@@ -624,7 +715,21 @@ class Api:
             # 关键修复：无论成功 / 异常 / 提前终止，都复位 _busy 并发出 finish，
             # 否则前端“开始压缩”按钮会永久卡在 disabled（表现为点不动）。
             self._busy = False
+            self._flush_done()  # 异常中断也尽量落盘断点续传记录
             self._emit({"t": "finish", "m": msg})
+
+    def _after_file(self, src, out_path, status, state, auto_delete):
+        """每个文件压缩完成后：记录断点续传(已成功)，并按需删除源文件。"""
+        if status.startswith("失败"):
+            return
+        self._mark_done(src)
+        # 仅当确实生成了「与源不同路径」的压缩结果时才删除源，避免误删跳过/失败的文件
+        if auto_delete and out_path != src and os.path.isfile(out_path) and os.path.isfile(src):
+            try:
+                os.remove(src)
+                state["del"] += 1
+            except Exception:
+                pass
 
     def _run(self, settings, subset=None):
         fmt_mode = _as_text(settings.get("target_fmt", "原格式"), "原格式")
@@ -648,6 +753,7 @@ class Api:
             threads = 0
         threads = threads or min(os.cpu_count() or 4, 8)
         threads = max(1, min(threads, 16))
+        auto_delete = bool(settings.get("auto_delete", False))
 
         files_snapshot = list(subset) if subset else list(self.files)
         total = len(files_snapshot)
@@ -727,7 +833,7 @@ class Api:
 
         self._emit({"t": "prog", "done": 0, "total": total})
         eng = self.engine_exe
-        state = {"done": 0, "first_out_dir": None}
+        state = {"done": 0, "first_out_dir": None, "del": 0}
         done_lock = threading.Lock()
         is_ect = "ect" in os.path.basename(eng).lower() if eng else False
 
@@ -895,9 +1001,7 @@ class Api:
                         status = '失败: ' + str(e)[:60]
                 if status is None:
                     status = "已生成(原图保留)" if out_path != src else ("已压缩" if new < old else "已最优")
-                if cap and new > cap:
-                    self._emit({"t": "log", "m": "  ⚠ %s 无损后 %s 仍超 %dKB，已保留" % (
-                        os.path.basename(src), human(new), max_kb)})
+                # 原格式(无损)为软件核心功能：忽略“输出上限”，直接输出原图格式能压到的最小无损结果。
                 self.results[src] = (out_path, status, not status.startswith("失败"), old, new)
                 self._emit({"t": "row", "src": src, "old": old, "new": new, "status": status, "out": out_path})
                 with done_lock:
@@ -906,6 +1010,7 @@ class Api:
                     if state["first_out_dir"] is None:
                         state["first_out_dir"] = os.path.dirname(out_path)
                 self._emit({"t": "prog", "done": d, "total": total})
+                self._after_file(src, out_path, status, state, auto_delete)
         else:
             # 非原格式（转 WebP / PNG / JPG）：Pillow 逐文件，多线程并行
             def work(item):
@@ -926,14 +1031,39 @@ class Api:
                         status = "WebP无损" if quality >= 100 else "WebP有损"
                     else:
                         status = {"PNG": "PNG无损", "JPG": "JPG有损"}[fmt_mode]
-                    if cap and new > cap and fmt_mode == "JPG":
-                        q = quality
-                        while q > 10 and new > cap:
-                            q -= 8
-                            new = compress_one(src, out_path, "JPG", eng, q, level)
-                        status = "JPG有损≤%dKB" % max_kb
+                    if cap and new > cap:
+                        if fmt_mode == "JPG":
+                            q = quality
+                            while q > 10 and new > cap:
+                                q -= 8
+                                new = compress_one(src, out_path, "JPG", eng, q, level)
+                            status = "JPG有损≤%dKB" % max_kb
+                        elif fmt_mode == "WebP":
+                            q = quality
+                            while q > 10 and new > cap:
+                                q -= 5
+                                new = compress_one(src, out_path, "WebP", eng, q, level)
+                            status = "WebP有损≤%dKB" % max_kb
+                        elif fmt_mode == "PNG":
+                            # PNG 为无损格式，无法按质量缩小；超限则转 JPG(有损)达标
+                            jpg_out = os.path.splitext(out_path)[0] + ".jpg"
+                            q = quality
+                            while q > 10 and new > cap:
+                                q -= 8
+                                new = compress_one(src, jpg_out, "JPG", eng, q, level)
+                            if new <= cap:
+                                if out_path != src and os.path.exists(out_path):
+                                    try:
+                                        os.remove(out_path)
+                                    except Exception:
+                                        pass
+                                out_path = jpg_out
+                                status = "PNG超限→JPG有损≤%dKB" % max_kb
+                            else:
+                                status = "PNG无损(已达最小质量仍超上限)"
                     self.results[src] = (out_path, status, not status.startswith("失败"), old, new)
                     self._emit({"t": "row", "src": src, "old": old, "new": new, "status": status, "out": out_path})
+                    self._after_file(src, out_path, status, state, auto_delete)
                 except Exception as e:
                     bn = os.path.basename(src)
                     msg = re.sub(r"\s+", " ", str(e)).strip()
@@ -966,6 +1096,10 @@ class Api:
                     os.startfile(folder)
                 except Exception as e:
                     self._emit({"t": "log", "m": "自动打开文件夹失败：%s" % str(e)})
+
+        if auto_delete and state.get("del"):
+            self._emit({"t": "log", "m": "已自动删除 %d 个源文件（仅保留压缩后图片）" % state["del"]})
+        self._flush_done()  # 落盘断点续传记录
 
         done_msg = "完成：共处理 %d 个文件" % total
         self._sync_failed()  # 同步“上一次失败图片”记录到磁盘
