@@ -1,89 +1,121 @@
-# JpgLossless · 图片压缩工作台（Web 版）
+# JpgLossless
 
-纯本地运行的图片压缩工具。界面用系统 Edge **WebView2** 内核渲染（「工程蓝图」风格），
-压缩逻辑全部在本机完成，图片**不会上传**任何服务器。
+JpgLossless 是一个 Windows 本地图片压缩工作台。图片始终在本机处理，不上传服务器；界面使用 WebView2，压缩引擎使用 ECT、jpegtran 和 Pillow。
 
-## 下载与安装（推荐从 Release 页面获取）
+## 下载与运行
 
-> 仓库里直接 Clone / 下载的是「源码」，并不能双击运行（需要装 Python、装依赖、再打包）。**最省事的方式是到 Release 页面下载已经打包好的单文件 exe。**
+### 直接运行（推荐）
 
-### 为什么建议从 Release 页面下载，而不是 Clone 源码？
+1. 下载 `JpgLossless-portable.zip`。
+2. 将 ZIP 解压到任意目录。
+3. 双击 `JpgLossless.exe`。
+4. 如果系统提示缺少 WebView2，安装 Microsoft Edge WebView2 Runtime 后再次启动。
 
-- **Clone / 下载源码 = 拿到的是 Python 源代码**（`.py`、前端 HTML 等），没有打包成可执行程序，双击打不开；要自己装 Python 3.x、执行 `pip install pywebview pillow`，再用 PyInstaller 打包，对普通用户门槛很高。
-- **Release 页面 = 官方发布的成品**：开发者已经把源码连同压缩引擎 `ect.exe` 一起打包成了单文件 `JpgLossless.exe`，**双击即用，无需安装任何环境**。版本号清晰，出问题能对照版本反馈。
-- 每次发版都会在 Release 里附上对应版本的 exe 与更新说明，下载到的就是当前最稳定、已验证的版本，不必自己从源码构建。
+ZIP 已包含可执行程序和运行说明，解压后无需安装 Python、Pillow 或压缩引擎。
 
-### 需要下载什么？
+### 从 Release 下载
 
-1. **`JpgLossless.exe`**（必需）：在仓库的 **Releases** 里下载——
-   - GitHub：进仓库主页，点右侧的 **Releases**（或「发布」），找到最新版本（如 `v1.1`），在 `Assets` 里点 `JpgLossless.exe`。
-   - Gitee：进仓库主页，点 **发行版**，同样找到最新版本下载 `JpgLossless.exe`。
-   - 它是单文件，已内置压缩引擎，不依赖仓库里的 `bin/ect.exe` 目录。
-2. **Microsoft Edge WebView2 运行时**（仅在双击 exe 报错时按需安装）：Windows 10/11 系统通常已自带；若双击后提示缺少 WebView2，请到微软官网下载安装「WebView2 Runtime」（Evergreen Bootstrapper）即可。
-
-> 不需要下载源码、不需要装 Python、不需要手动放 `ect.exe`。
-
-### 下载之后怎么用？（详细步骤）
-
-1. **下载**：进入仓库的 Releases 页面，找到**最新版本**，在「Assets / 资源」里点 `JpgLossless.exe` 下载到本地（如下载到「下载」文件夹或任意目录）。
-2. **（可选）放好位置**：把它挪到你习惯的目录，例如 `D:\Tools\`。单文件 exe 不挑位置，随意存放、可建快捷方式到桌面。
-3. **双击运行**：直接双击 `JpgLossless.exe`。
-   - 正常情况：窗口立刻弹出，进入工作台界面。
-   - 若弹窗报错「无法启动，因为计算机中丢失 …」或提示缺少 WebView2：按上面第 2 点安装 WebView2 Runtime，装完再双击即可。
-4. **开始压缩**（与下方「快速使用」一致）：
-   1. 把图片 / 文件夹拖进右侧「拖入区」，或点「选择文件 / 选择文件夹」。
-   2. 左侧设置保存位置、目标格式、文件名后缀、JPG 质量等。
-   3. 选中文件点「预览选中对比」查看前后效果。
-   4. 点「开始压缩」。
-5. **设置自动保存**：你的偏好会写入 exe 同目录的 `config.json`，下次启动自动恢复。
+GitHub 和 Gitee 的 Releases 页面提供同一版本的 ZIP 或 EXE。普通用户推荐下载 ZIP，开发者可以 Clone 源码自行构建。
 
 ## 快速使用
 
-1. 双击 `JpgLossless.exe`（无需安装 Python）。
-2. 把图片 / 文件夹拖进右侧「拖入区」，或点「选择文件 / 选择文件夹」。
-3. 在左侧设置：保存位置、目标格式、文件名后缀、JPG 质量、是否自动打开输出文件夹。
-4. 选中某个文件后点「预览选中对比」，可先在右侧查看前后大小与效果。
-5. 点「开始压缩」。
+1. 将图片或文件夹拖入右侧文件区，也可以使用“选择文件 / 选择文件夹”。
+2. 选择保存位置、目标格式和文件名规则。
+3. 设置“压缩质量”。质量越高，视觉保真度越高；JPG 始终是有损格式，WebP 质量 100 为无损模式。
+4. 如需控制文件大小，在“目标体积”中填写 KB 数。JPG/WebP 会自动搜索目标值上下约 10KB 的结果，并优先选择范围内质量最高的编码。
+5. 点击“预览选中对比”检查视觉效果，再点击“开始压缩”。
+6. 可开启完成后自动删除源文件，但建议先确认输出结果并保留备份。
 
-每个文件行里有一条**像素对比条**：灰色=原大小，蓝/绿=压缩后大小（变绿表示更小，变橙表示变大），
-配合等宽字体的字节数与百分比，压缩结果一眼可见。
+## 压缩策略
 
-## 功能
+### 原格式无损
 
-- 原格式无损（JPG/PNG，依赖 `ect` 引擎；首次使用自动下载，无网络时把 `ect.exe` 放进 `bin/`）
-- 转 WebP 无损 / PNG / JPG（JPG 有损，质量可调）
-- 批量拖入、文件夹递归、保持目录结构
-- 输出前预览对比、处理完成自动打开输出文件夹
-- 设置自动写入 `config.json`，下次启动恢复
+- JPG、JPEG 和 PNG 使用 ECT 批量多线程优化。
+- ECT 只在结果更小时替换文件，不会因为优化失败而放大源文件。
+- 中文路径会自动使用 ASCII 临时路径，规避部分 Windows 编码问题。
+- JPEG 在 ECT 失败时可以使用 jpegtran 无损熵编码优化兜底。
+- 原格式模式不受“目标体积”限制，因为无损压缩无法保证任意目标大小。
+
+### JPG 转换
+
+- 使用 Pillow 的优化编码和渐进式 JPEG。
+- 目标体积模式通过质量二分搜索寻找最高质量结果。
+- 如果图片在最低质量下仍无法接近目标，会保留最佳结果并明确显示未达目标。
+
+### WebP 转换
+
+- 使用 libwebp method=6，在体积和编码时间之间选择更高压缩效率。
+- 保留 RGBA 透明通道。
+- 质量 100 使用 WebP 无损编码；较低质量使用有损编码。
+
+### PNG 转换
+
+- 使用 Pillow optimize=True 的无损 PNG 编码。
+- PNG 本身无法通过质量参数变小；超过目标体积时会尝试生成 JPG 兜底。
+- JPG 兜底也无法接近目标时，会删除候选 JPG 并保留 PNG。
+
+## 软件优点
+
+- **本地隐私**：图片不离开电脑，适合照片、设计稿和内部资料。
+- **无损优先**：原格式模式优先保留像素数据，并在压缩结果放大时保护源文件。
+- **目标体积搜索**：不是简单降低质量，而是在目标附近寻找视觉质量更高的结果。
+- **透明通道保护**：WebP 转换不会默认丢失 RGBA 透明信息。
+- **批量高效**：文件夹递归、目录结构保持、并行处理、断点续传和失败重试均可用。
+- **结果可核对**：每个文件显示原始大小、输出大小、压缩比例和处理状态。
+- **异常可恢复**：引擎失败、损坏图片、非 ASCII 路径和超出目标体积都会给出明确状态。
+- **零安装便携**：ZIP 解压后即可运行，不修改系统，不要求 Python 环境。
+
+## 功能清单
+
+- JPG / JPEG / PNG 原格式无损优化
+- JPG、PNG、WebP 格式转换
+- WebP 有损 / 无损模式
+- 目标体积约束（JPG/WebP 约 ±10KB）
+- 批量拖拽、文件夹递归、保持目录结构
+- 预览前后对比和像素比例条
+- 中文路径兼容
+- 失败记录、断点续传和失败重试
+- 完成后自动打开输出目录
+- 可选完成后自动删除源文件
+- 设置保存到程序目录的 `config.json`
 
 ## 运行环境
 
-- Windows 10 / 11（需 Edge WebView2 运行时，系统通常自带；若双击报错提示缺少 WebView2，
-  到微软官网安装「WebView2 Runtime」即可）
-- 压缩引擎 `bin/ect.exe` 已随包内置；原文件夹无损模式若缺失会自动联网下载
+- Windows 10 / 11
+- Microsoft Edge WebView2 Runtime
 
-## 开发 / 打包
+便携 ZIP 已内置 ECT 引擎。源码模式如果 `bin/ect.exe` 缺失，首次使用原格式无损功能时会尝试自动下载。
+
+## 从源码运行
 
 ```bash
-# 源码运行（需 Python + pip install pywebview pillow）
+python -m pip install pywebview pillow
 python jpg_lossless_web.py
-
-# 打包为单文件 exe
-pyinstaller --onefile --noconsole --name JpgLossless ^
-  --add-binary "bin/ect.exe;bin" --add-data "web/index.html;web" ^
-  --hidden-import webview --collect-submodules webview --collect-data webview ^
-  jpg_lossless_web.py
 ```
 
-## 文件结构
+## 构建可执行文件
 
+```bash
+pyinstaller --noconfirm --clean JpgLossless.spec
 ```
+
+构建结果位于 `dist/JpgLossless.exe`。
+
+## 项目结构
+
+```text
 jpg-lossless/
-├── JpgLossless.exe        ← 双击即用（方案 B 成品，WebView2 界面）
-├── jpg_lossless_web.py    ← 后端（pywebview API + 压缩逻辑）
-├── jpg_lossless_gui.py    ← 旧版 tkinter 界面（保留参考）
-├── web/index.html         ← 前端界面
-├── bin/ect.exe            ← 压缩引擎
-├── config.json            ← 自动生成（上次设置）
-└── README.md
+├── JpgLossless.exe              # 本地便携运行程序
+├── JpgLossless-portable.zip     # 解压即用发布包
+├── jpg_lossless_web.py          # WebView2 后端和压缩策略
+├── jpg_lossless_gui.py          # 旧版 Tkinter 参考实现
+├── web/index.html               # 前端界面
+├── bin/ect.exe                  # ECT 无损引擎
+├── JpgLossless.spec             # PyInstaller 配置
+├── tests/                       # 压缩策略回归测试
+└── LICENSE                      # MIT License
 ```
+
+## 许可证
+
+MIT License。第三方压缩引擎按照各自许可证发布。

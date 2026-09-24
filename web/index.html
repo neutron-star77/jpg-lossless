@@ -374,11 +374,11 @@
           <label>压缩质量</label>
           <span><input type="range" id="quality" min="1" max="100" value="95">
             <input type="text" id="qval" class="qval" value="95" maxlength="3">
-            <span style="color:var(--muted); font-size:11.5px">（转 JPG / WebP / PNG 生效；100 = 无损）</span></span>
+            <span style="color:var(--muted); font-size:11.5px">（转 JPG / WebP 生效；WebP 质量 100 = 无损，JPG 仍为高质量有损）</span></span>
 
-          <label>输出上限</label>
+          <label>目标体积</label>
           <span><input type="text" id="maxKb" placeholder="KB，留空=不限" style="width:110px">
-            <span style="color:var(--muted); font-size:11.5px">原格式为无损核心功能、忽略此上限；仅转 JPG / WebP / PNG 时按上限有损输出</span></span>
+            <span style="color:var(--muted); font-size:11.5px">原格式为无损核心功能、忽略此目标；转 JPG / WebP 时自动搜索目标±10KB并尽量保留质量</span></span>
 
           <label>完成后</label>
           <span><label class="check"><input type="checkbox" id="autoOpen">

@@ -208,10 +208,12 @@ def run_engine(engine, src, dst, level=-5):
 def to_webp(src, dst, quality=95):
     q = int(quality)
     with Image.open(src) as im:
-        im = ImageOps.exif_transpose(im).convert("RGB")
+        im = ImageOps.exif_transpose(im)
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGBA" if "transparency" in im.info else "RGB")
         if q >= 100:
             # 无损：libwebp 对照片既慢（数十秒）又会让文件变大，仅作可选
-            im.save(dst, "WEBP", lossless=True, method=0)
+            im.save(dst, "WEBP", lossless=True, method=6, exact=True)
             return
         # 有损：method=0 最快编码。但 libwebp 在部分大图(尤其 q≈90~95)会抛
         # “encoding error 6”，此处优先用用户设定的 q，失败则逐级降质量重试，
@@ -219,7 +221,7 @@ def to_webp(src, dst, quality=95):
         last_err = None
         for qq in [q] + list(range(min(q - 5, 90), 49, -5)):
             try:
-                im.save(dst, "WEBP", lossless=False, quality=qq, method=0)
+                im.save(dst, "WEBP", lossless=False, quality=qq, method=6, exact=True)
                 return
             except Exception as e:
                 last_err = e
@@ -236,11 +238,42 @@ def compress_one(src, dst, fmt, eng, quality, level=-5):
         to_webp(src, dst, quality)
     elif fmt == "PNG":
         with Image.open(src) as im:
-            ImageOps.exif_transpose(im).save(dst, "PNG")
+            ImageOps.exif_transpose(im).save(dst, "PNG", optimize=True)
     elif fmt == "JPG":
         with Image.open(src) as im:
-            ImageOps.exif_transpose(im).convert("RGB").save(dst, "JPEG", quality=quality)
+            ImageOps.exif_transpose(im).convert("RGB").save(
+                dst, "JPEG", quality=quality, optimize=True, progressive=True)
     return os.path.getsize(dst)
+
+
+def _compress_to_target(src, dst, fmt, eng, quality, level, target, tolerance=10240):
+    """Find the highest quality whose encoded size is within target + tolerance."""
+    target = max(1, int(target))
+    upper = target + max(0, int(tolerance))
+    # Target sizing may raise quality above the slider value to use the available budget.
+    low, high = 1, 100
+    best = None
+    smallest = None
+    while low <= high:
+        q = (low + high) // 2
+        size = compress_one(src, dst, fmt, eng, q, level)
+        candidate = (q, size)
+        if smallest is None or size < smallest[1]:
+            smallest = candidate
+        if size <= upper:
+            if best is None or q > best[0] or (q == best[0] and abs(size - target) < abs(best[1] - target)):
+                best = candidate
+            low = q + 1
+        else:
+            high = q - 1
+    chosen = best or smallest
+    if chosen is None:
+        raise RuntimeError("编码器未生成输出")
+    q, size = chosen
+    # The last probe may not be the chosen candidate, so encode the selected quality once more.
+    size = compress_one(src, dst, fmt, eng, q, level)
+    near = abs(size - target) <= tolerance
+    return q, size, bool(best and near), near
 
 
 class Api:
@@ -738,6 +771,7 @@ class Api:
         suffix = _as_text(settings.get("suffix"))
         keep = bool(settings.get("keep", False))
         quality = int(settings.get("quality", 95))
+        quality = max(1, min(100, quality))
         try:
             max_kb = int(settings.get("max_kb") or 0)
         except Exception:
@@ -818,8 +852,8 @@ class Api:
         if fmt_mode == "JPG":
             self._emit({"t": "log", "m": "注意：转 JPG 为有损压缩（quality=%d）" % quality})
         if cap:
-            self._emit({"t": "log", "m": "输出上限：%d KB（超限时%s）" % (
-                max_kb, "自动降质以达标(JPG)" if fmt_mode == "JPG" else "无损无法缩小则保留")})
+            self._emit({"t": "log", "m": "目标体积：%d KB（%s）" % (
+                max_kb, "二分搜索质量，目标±10KB" if fmt_mode in ("JPG", "WebP") else "无损无法缩小则保留")})
 
         if fmt_mode == "原格式" and not self.engine_exe:
             self._emit({"t": "log", "m": "未检测到引擎，尝试自动下载 ect…"})
@@ -1031,36 +1065,39 @@ class Api:
                         status = "WebP无损" if quality >= 100 else "WebP有损"
                     else:
                         status = {"PNG": "PNG无损", "JPG": "JPG有损"}[fmt_mode]
-                    if cap and new > cap:
+                    # JPG/WebP always search toward the requested target; PNG only falls back when oversized.
+                    if cap and (fmt_mode in ("JPG", "WebP") or new > cap):
                         if fmt_mode == "JPG":
-                            q = quality
-                            while q > 10 and new > cap:
-                                q -= 8
-                                new = compress_one(src, out_path, "JPG", eng, q, level)
-                            status = "JPG有损≤%dKB" % max_kb
+                            q, new, in_range, near = _compress_to_target(
+                                src, out_path, "JPG", eng, quality, level, cap)
+                            status = ("JPG有损≈%dKB(q=%d)" % (max_kb, q) if in_range else
+                                      "JPG有损(未达目标，%s，q=%d)" % (human(new), q))
                         elif fmt_mode == "WebP":
-                            q = quality
-                            while q > 10 and new > cap:
-                                q -= 5
-                                new = compress_one(src, out_path, "WebP", eng, q, level)
-                            status = "WebP有损≤%dKB" % max_kb
+                            q, new, in_range, near = _compress_to_target(
+                                src, out_path, "WebP", eng, quality, level, cap)
+                            status = ("WebP有损≈%dKB(q=%d)" % (max_kb, q) if in_range else
+                                      "WebP有损(未达目标，%s，q=%d)" % (human(new), q))
                         elif fmt_mode == "PNG":
                             # PNG 为无损格式，无法按质量缩小；超限则转 JPG(有损)达标
                             jpg_out = os.path.splitext(out_path)[0] + ".jpg"
-                            q = quality
-                            while q > 10 and new > cap:
-                                q -= 8
-                                new = compress_one(src, jpg_out, "JPG", eng, q, level)
-                            if new <= cap:
+                            png_size = new
+                            q, jpg_size, in_range, near = _compress_to_target(
+                                src, jpg_out, "JPG", eng, quality, level, cap)
+                            if in_range:
                                 if out_path != src and os.path.exists(out_path):
                                     try:
                                         os.remove(out_path)
                                     except Exception:
                                         pass
                                 out_path = jpg_out
-                                status = "PNG超限→JPG有损≤%dKB" % max_kb
+                                status = "PNG超限→JPG有损≈%dKB(q=%d)" % (max_kb, q)
                             else:
-                                status = "PNG无损(已达最小质量仍超上限)"
+                                try:
+                                    os.remove(jpg_out)
+                                except OSError:
+                                    pass
+                                new = png_size
+                                status = "PNG无损(转JPG仍超上限，保留PNG)"
                     self.results[src] = (out_path, status, not status.startswith("失败"), old, new)
                     self._emit({"t": "row", "src": src, "old": old, "new": new, "status": status, "out": out_path})
                     self._after_file(src, out_path, status, state, auto_delete)
